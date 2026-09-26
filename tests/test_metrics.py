@@ -82,8 +82,22 @@ class TestCompareStrategies:
         assert list(frame.index) == [
             BASELINE_LABEL,
             "threshold",
+            "forecast",
             "perfect foresight (upper bound)",
         ]
+        assert list(frame["kind"]) == ["baseline", "online", "forecast", "optimal"]
+
+    def test_perfect_foresight_bounds_the_forecast_strategy(self, prices):
+        frame = compare_strategies(prices, COMMERCIAL_1MW, ThresholdStrategy())
+        planned = frame.loc["forecast", "net_usd"]
+        optimal = frame.loc["perfect foresight (upper bound)", "net_usd"]
+        assert planned <= optimal + 1e-6
+        assert frame.loc["forecast", "capture_ratio"] == pytest.approx(planned / optimal)
+
+    def test_forecast_row_can_be_left_out(self, prices):
+        frame = compare_strategies(
+            prices, COMMERCIAL_1MW, ThresholdStrategy(), include_forecast=False
+        )
         assert list(frame["kind"]) == ["baseline", "online", "optimal"]
 
     def test_the_baseline_sits_below_the_rule_based_result(self, prices):
@@ -112,7 +126,7 @@ class TestCompareStrategies:
             prices, COMMERCIAL_1MW, ThresholdStrategy(), include_optimal=False
         )
         assert "perfect foresight (upper bound)" not in frame.index
-        assert list(frame["kind"]) == ["baseline", "online"]
+        assert list(frame["kind"]) == ["baseline", "online", "forecast"]
 
     def test_capture_ratio_is_none_when_there_is_no_upper_bound(self, prices):
         frame = compare_strategies(
@@ -143,7 +157,7 @@ def test_dam_only_frame_infers_market() -> None:
     frame = compare_strategies(
         dam, COMMERCIAL_1MW, ThresholdStrategy(), include_optimal=False
     )
-    assert list(frame.index) == [BASELINE_LABEL, "threshold"]
+    assert list(frame.index) == [BASELINE_LABEL, "threshold", "forecast"]
     assert frame.index[0] == "no battery (baseline)"
 
 
@@ -217,3 +231,57 @@ def test_compare_zones_handles_no_input() -> None:
     out = compare_zones({}, COMMERCIAL_1MW, ThresholdStrategy())
 
     assert out.empty
+
+
+class TestRankStability:
+    @staticmethod
+    def _table(values: dict[str, float]) -> pd.DataFrame:
+        return pd.DataFrame(
+            {"usd_per_kw_year": list(values.values())},
+            index=pd.Index(list(values), name="settlement_point"),
+        )
+
+    def test_it_lines_up_each_zone_across_periods(self):
+        from arb.metrics import rank_stability
+
+        out = rank_stability(
+            {
+                "2026-06": self._table({"LZ_A": 5.0, "LZ_B": 3.0, "LZ_C": 1.0}),
+                "2026-07": self._table({"LZ_A": 4.0, "LZ_B": 7.0, "LZ_C": 2.0}),
+            }
+        )
+        assert list(out.index) == ["LZ_B", "LZ_A", "LZ_C"]  # by mean
+        assert out.loc["LZ_A", "best_rank"] == 1
+        assert out.loc["LZ_A", "worst_rank"] == 2
+        assert out.loc["LZ_C", "periods_top3"] == 2
+
+    def test_agreement_is_one_when_the_order_never_changes(self):
+        from arb.metrics import rank_agreement, rank_stability
+
+        same = {"LZ_A": 5.0, "LZ_B": 3.0, "LZ_C": 1.0}
+        out = rank_stability({"m1": self._table(same), "m2": self._table(same)})
+        assert rank_agreement(out) == pytest.approx(1.0)
+
+    def test_agreement_is_negative_when_the_order_flips(self):
+        from arb.metrics import rank_agreement, rank_stability
+
+        out = rank_stability(
+            {
+                "m1": self._table({"LZ_A": 3.0, "LZ_B": 2.0, "LZ_C": 1.0}),
+                "m2": self._table({"LZ_A": 1.0, "LZ_B": 2.0, "LZ_C": 3.0}),
+            }
+        )
+        assert rank_agreement(out) == pytest.approx(-1.0)
+
+
+def test_every_row_reports_per_kw_year_on_the_same_after_wear_basis(prices):
+    frame = compare_strategies(prices, COMMERCIAL_1MW, ThresholdStrategy())
+    years = None
+    for label, row in frame.iterrows():
+        if row["net_after_degradation_usd"] == 0:
+            continue
+        implied = row["net_after_degradation_usd"] / row["usd_per_kw_year"] / COMMERCIAL_1MW.power_kw
+        years = years or implied
+        assert implied == pytest.approx(years), label
+    optimal = frame.loc["perfect foresight (upper bound)"]
+    assert optimal["net_after_degradation_usd"] < optimal["net_usd"]

@@ -17,16 +17,18 @@ import pandas as pd
 import streamlit as st
 
 from arb.config import PRESETS, BatteryConfig
-from arb.data.cache import cached_fetch, load
+from arb.data.cache import cached_fetch, cached_windows, load
 from arb.data.ercot_source import ErcotLiveProvider, load_keys_file
 from arb.data.providers import PriceRequest
 from arb.metrics import compare_strategies, compare_zones, compute_metrics
-from arb.sim.engine import run_backtest
+from arb.forecast import forecast_accuracy, plan_next_day
+from arb.sim.engine import prepare_price_series, run_backtest
 from arb.strategies.threshold import ThresholdStrategy
 from arb.viz import (
     cumulative_revenue_figure,
     daily_revenue_figure,
     dispatch_figure,
+    forecast_plan_figure,
     zone_comparison_figure,
 )
 from arb.zones import HUBS, LOAD_ZONES, label_for
@@ -45,6 +47,41 @@ PRESET_LABELS = {
 }
 
 DEFAULT_ZONE = "LZ_AEN"
+
+# ERCOT runs two wholesale markets. Most people have never heard of either, so
+# the app names them in plain words and keeps the code for anyone who has.
+MARKET_NAMES = {"RTM": "Real-time", "DAM": "Day-ahead"}
+MARKET_EXPLAINERS = {
+    "RTM": "What electricity actually sold for, reset every 15 minutes as "
+           "supply and demand shift. It swings the most, spikes included, "
+           "which is where a battery earns most of its money.",
+    "DAM": "Prices agreed the day before for each hour of the next day, "
+           "based on forecasts. Smoother and more predictable, with fewer "
+           "spikes to profit from.",
+}
+
+
+def _market_name(market: str) -> str:
+    """'Real-time (RTM)': the plain name first, the ERCOT code in brackets."""
+    return f"{MARKET_NAMES.get(market, market)} ({market})"
+MIN_DEFAULT_DAYS = 7
+
+
+def _default_window() -> tuple:
+    """Open on the latest window already cached for the default zone.
+
+    A cached default means the first screen of a demo renders without the
+    network. With nothing cached, fall back to the last 30 days.
+    """
+    yesterday = (pd.Timestamp("today").normalize() - pd.Timedelta(days=1)).date()
+    windows = [
+        (start, end)
+        for start, end in cached_windows(DEFAULT_ZONE, "RTM")
+        if (end - start).days + 1 >= MIN_DEFAULT_DAYS and end <= yesterday
+    ]
+    if windows:
+        return windows[-1]
+    return (yesterday - pd.Timedelta(days=29).to_pytimedelta(), yesterday)
 
 
 def _load_credentials() -> bool:
@@ -67,7 +104,8 @@ def _prices_cached(
         return hit
     if not ready:
         raise RuntimeError(
-            f"no cached {market} prices for {label_for(zone)} covering {start}..{end}, "
+            f"no cached {_market_name(market)} prices for {label_for(zone)} "
+            f"covering {start}..{end}, "
             "and no API credentials to fetch them"
         )
     return cached_fetch(ErcotLiveProvider(), request)
@@ -117,7 +155,16 @@ def main() -> None:
                  "address. Most of Austin is priced in LZ_SOUTH; only Austin "
                  "Energy's own customers are in LZ_AEN.",
         )
-        market = st.radio("Price market", ["RTM", "DAM"], horizontal=True)
+        market = st.radio(
+            "Which prices?",
+            ["RTM", "DAM"],
+            horizontal=True,
+            format_func=_market_name,
+            help="ERCOT, the Texas grid operator, sells electricity in two "
+                 "markets. Real-time (RTM): " + MARKET_EXPLAINERS["RTM"]
+                 + " Day-ahead (DAM): " + MARKET_EXPLAINERS["DAM"],
+        )
+        st.caption(MARKET_EXPLAINERS[market])
 
         preset_key = st.selectbox(
             "Battery",
@@ -145,12 +192,12 @@ def main() -> None:
         else:
             battery = preset
 
-        default_end = pd.Timestamp("today").normalize() - pd.Timedelta(days=1)
-        default_start = default_end - pd.Timedelta(days=29)
+        default_start, default_end = _default_window()
+        latest = (pd.Timestamp("today").normalize() - pd.Timedelta(days=1)).date()
         window = st.date_input(
             "Historical window",
-            value=(default_start.date(), default_end.date()),
-            max_value=default_end.date(),
+            value=(default_start, default_end),
+            max_value=latest,
         )
         st.caption(
             "Uses real cached ERCOT prices. The API is only called for days "
@@ -188,7 +235,8 @@ def main() -> None:
     )
     p = prices["price_usd_per_mwh"]
     st.caption(
-        f"{label_for(zone)} {market} · {len(prices):,} intervals · {span} · "
+        f"{label_for(zone)} · {_market_name(market)} prices · "
+        f"{len(prices):,} intervals · {span} · "
         f"price ${p.min():,.2f} to ${p.max():,.2f}/MWh · "
         f"{(p < 0).sum():,} negative-price intervals"
     )
@@ -230,8 +278,10 @@ def main() -> None:
     ].iloc[0]
     st.caption(
         "Without a battery there is no spread to capture, so the baseline is $0. "
-        "The rule-based strategy trades only on information it could actually "
-        "have had; perfect foresight sees the whole future and is unreachable."
+        "The rule-based and forecast strategies trade only on information they "
+        "could actually have had: the rule reacts to recent prices, the forecast "
+        "plans each day from earlier days' price shape. Perfect foresight sees "
+        "the whole future and is unreachable."
         + (f" This run captured **{capture:.0%}** of that bound." if capture == capture else "")
     )
 
@@ -243,11 +293,13 @@ def main() -> None:
             f"{gap:.0%} of ${BENCHMARK_LOW:.0f}/kW-yr",
         )
         st.caption(
-            f"Optimized ERCOT RTM arbitrage is reported around "
+            f"Optimized ERCOT real-time (RTM) arbitrage is reported around "
             f"${BENCHMARK_LOW:.0f}-${BENCHMARK_HIGH:.0f} per kW-year "
             f"(Intertrust). A single zone, a simple threshold rule, and no "
             f"demand charges or fleet coordination is well short of that."
         )
+
+    _forecast_section(prices, result, battery)
 
     st.subheader("Buying low, selling high")
     st.plotly_chart(
@@ -304,7 +356,8 @@ def _zone_comparison(
     )
     targets = list(LOAD_ZONES) + list(HUBS) if include_hubs else list(LOAD_ZONES)
     st.caption(
-        f"{market} · {start} to {end} · {battery.name}. Locations with no "
+        f"{_market_name(market)} prices · {start} to {end} · {battery.name}. "
+        "Locations with no "
         "cached prices for this window are skipped."
     )
 
@@ -322,7 +375,7 @@ def _zone_comparison(
 
     if not frames:
         st.error(
-            f"No location had cached {market} prices for {start}..{end}. "
+            f"No location had cached {_market_name(market)} prices for {start}..{end}. "
             "Try a window that has been fetched, or pull it with the CLI."
         )
         return
@@ -364,4 +417,45 @@ def _zone_comparison(
         "Annualized from this historical window only. Not a forecast, and it "
         "assumes a battery that cycles freely rather than one held back for "
         "backup or resilience."
+    )
+
+
+def _forecast_section(prices: pd.DataFrame, result, battery) -> None:
+    """Forward look: the day after this window, planned against a forecast."""
+    series = prepare_price_series(prices, result.market, result.settlement_point)
+    st.subheader("Looking ahead: the next day")
+    try:
+        plan = plan_next_day(series, battery)
+    except (ValueError, RuntimeError) as exc:
+        st.info(f"Not enough history in this window to forecast from ({exc}).")
+        return
+    accuracy = forecast_accuracy(series)
+
+    cols = st.columns(3)
+    cols[0].metric(
+        f"Planned for {plan.date:%b %d}",
+        _money(plan.expected_net_after_wear_usd, 2),
+        help="Energy revenue the plan expects if prices follow the forecast, "
+             "after battery wear. Real prices will differ.",
+    )
+    if accuracy.intervals:
+        cols[1].metric(
+            "Typical forecast miss",
+            f"${accuracy.mae_usd_per_mwh:,.2f}/MWh",
+            help=f"Mean absolute error over {accuracy.days} days of this window, "
+                 "each day forecast from earlier days only.",
+        )
+        cols[2].metric(
+            "vs. 'same as yesterday'",
+            f"{accuracy.skill:+.0%}",
+            help="Share of the naive forecast's error removed. Positive means "
+                 "the forecast beat assuming each day repeats the one before.",
+        )
+    st.plotly_chart(forecast_plan_figure(plan, battery), width='stretch')
+    st.caption(
+        "The forecast is the median price at each time of day over the "
+        "previous 7 days of data, so it captures the usual daily shape but "
+        "cannot anticipate a price spike. The 'forecast' row in the table "
+        "above shows what trading on this forecast every day of the window "
+        "would actually have earned at real prices."
     )

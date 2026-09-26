@@ -93,3 +93,29 @@ def test_save_creates_missing_directories(rtm_request, tmp_path):
     nested = tmp_path / "a" / "b" / "c"
     save(rtm_request, SyntheticProvider().fetch(rtm_request), nested)
     assert cache_path(rtm_request, nested).exists()
+
+
+class TestCachedWindows:
+    def test_it_lists_windows_for_one_point_and_market(self, tmp_path):
+        import datetime as dt
+
+        from arb.data.cache import cached_windows
+
+        for name in (
+            "RTM_LZ_AEN_2026-06-01_2026-06-30.csv",
+            "RTM_LZ_AEN_2026-08-26_2026-09-24.csv",
+            "DAM_LZ_AEN_2026-09-01_2026-09-24.csv",
+            "RTM_LZ_AENX_2026-09-01_2026-09-24.csv",
+            "RTM_LZ_AEN_notes.csv",
+        ):
+            (tmp_path / name).write_text("")
+        windows = cached_windows("LZ_AEN", "RTM", tmp_path)
+        assert windows == [
+            (dt.date(2026, 6, 1), dt.date(2026, 6, 30)),
+            (dt.date(2026, 8, 26), dt.date(2026, 9, 24)),
+        ]
+
+    def test_an_empty_or_missing_cache_is_fine(self, tmp_path):
+        from arb.data.cache import cached_windows
+
+        assert cached_windows("LZ_AEN", "RTM", tmp_path / "nope") == []

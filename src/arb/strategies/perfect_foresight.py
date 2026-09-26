@@ -55,11 +55,14 @@ def solve_perfect_foresight(
     prices: pd.Series,
     battery: BatteryConfig,
     initial_soc_fraction: float | None = None,
+    throughput_cost_per_kwh: float = 0.0,
 ) -> PerfectForesightSolution:
     """Maximize net revenue over ``prices`` with full knowledge of the future.
 
-    Works in scaled integer space (kWh x 1000) to keep the LP numerically well
-    conditioned, then rescales before returning.
+    ``throughput_cost_per_kwh`` charges the objective for every kWh moved in
+    or out, which stops the optimizer cycling on spreads that would not cover
+    battery wear. It defaults to zero so the upper bound stays a pure
+    energy-arbitrage ceiling; ``net_usd`` always reports energy revenue only.
     """
     values = prices.to_numpy(dtype=float)
     n = len(values)
@@ -99,6 +102,11 @@ def solve_perfect_foresight(
         - usd_from_mwh(charge[i] * hours[i], float(values[i]))
         for i in range(n)
     )
+    if throughput_cost_per_kwh:
+        profit -= pulp.lpSum(
+            throughput_cost_per_kwh * (charge[i] + discharge[i]) * hours[i]
+            for i in range(n)
+        )
     problem += profit
 
     problem += soc[0] == start_frac * cap + eta_c * charge[0] * hours[0] - discharge[0] * hours[0] / eta_d

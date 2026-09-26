@@ -17,6 +17,12 @@ _SOC_COLOR = "#0e7c86"
 _CHARGE_COLOR = "#2e7d32"
 _DISCHARGE_COLOR = "#c62828"
 
+_MARKET_NAMES = {"RTM": "real-time prices", "DAM": "day-ahead prices"}
+
+
+def _market(code: str) -> str:
+    return _MARKET_NAMES.get(code, code)
+
 
 def dispatch_figure(
     result: BacktestResult,
@@ -102,7 +108,7 @@ def dispatch_figure(
     fig.update_yaxes(title_text="State of charge %", range=[0, 100], row=2, col=1)
 
     heading = title or (
-        f"{result.settlement_point} {result.market} - {result.strategy_name} "
+        f"{result.settlement_point} {_market(result.market)} - {result.strategy_name} "
         f"({battery.power_kw:g} kW / {battery.capacity_kwh:g} kWh)"
     )
     fig.update_layout(
@@ -130,7 +136,7 @@ def cumulative_revenue_figure(result: BacktestResult) -> go.Figure:
         )
     )
     fig.update_layout(
-        title=f"Cumulative net revenue - {result.settlement_point} {result.market}",
+        title=f"Cumulative net revenue - {result.settlement_point}, {_market(result.market)}",
         height=380,
         hovermode="x unified",
         margin=dict(l=60, r=40, t=60, b=40),
@@ -190,5 +196,55 @@ def zone_comparison_figure(comparison: pd.DataFrame) -> go.Figure:
         margin=dict(l=110, r=40, t=60, b=40),
         xaxis_title="USD / kW-year",
         showlegend=False,
+    )
+    return fig
+
+
+def forecast_plan_figure(plan, battery) -> go.Figure:
+    """Forecast price curve for one day with the schedule planned against it."""
+    frame = plan.to_frame()
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_trace(
+        go.Scatter(
+            x=frame["interval_start"],
+            y=frame["forecast_usd_per_mwh"],
+            name="forecast $/MWh",
+            line=dict(color=_PRICE_COLOR, width=2, dash="dash"),
+            hovertemplate="%{x|%H:%M}<br>forecast $%{y:,.2f}/MWh<extra></extra>",
+        ),
+        secondary_y=False,
+    )
+    fig.add_trace(
+        go.Bar(
+            x=frame["interval_start"],
+            y=frame["charge_kw"],
+            name="planned charge kW",
+            marker_color=_CHARGE_COLOR,
+            hovertemplate="%{x|%H:%M}<br>charge %{y:,.1f} kW<extra></extra>",
+        ),
+        secondary_y=True,
+    )
+    fig.add_trace(
+        go.Bar(
+            x=frame["interval_start"],
+            y=-frame["discharge_kw"],
+            name="planned discharge kW",
+            marker_color=_DISCHARGE_COLOR,
+            hovertemplate="%{x|%H:%M}<br>discharge %{y:,.1f} kW<extra></extra>",
+        ),
+        secondary_y=True,
+    )
+    fig.update_yaxes(title_text="forecast $/MWh", secondary_y=False)
+    fig.update_yaxes(
+        title_text="kW",
+        range=[-1.1 * battery.power_kw, 1.1 * battery.power_kw],
+        secondary_y=True,
+    )
+    fig.update_layout(
+        title=f"Plan for {plan.date:%a %b %d, %Y} (forecast, not a guarantee)",
+        height=420,
+        barmode="relative",
+        legend=dict(orientation="h", y=-0.2),
+        margin=dict(t=60, b=40),
     )
     return fig

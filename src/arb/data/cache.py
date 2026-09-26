@@ -7,7 +7,9 @@ ISO-8601 with an explicit offset and are re-localized to Central Time on read.
 
 from __future__ import annotations
 
+import datetime as dt
 import os
+import re
 from pathlib import Path
 
 import pandas as pd
@@ -68,3 +70,31 @@ def cached_fetch(
     frame = validate_price_frame(provider.fetch(request))
     save(request, frame, cache_dir)
     return frame
+
+
+_CACHE_NAME = re.compile(
+    r"^(?P<market>RTM|DAM)_(?P<point>.+)_(?P<start>\d{4}-\d{2}-\d{2})_(?P<end>\d{4}-\d{2}-\d{2})\.csv$"
+)
+
+
+def cached_windows(
+    settlement_point: str,
+    market: str,
+    cache_dir: Path | None = None,
+) -> list[tuple[dt.date, dt.date]]:
+    """Date windows already on disk for one settlement point and market.
+
+    Sorted by end date, then start date. Lets the UI open on data it can show
+    without a network call.
+    """
+    base = cache_dir or DEFAULT_CACHE_DIR
+    if not base.exists():
+        return []
+    found = []
+    for path in base.glob(f"{market}_{settlement_point}_*.csv"):
+        m = _CACHE_NAME.match(path.name)
+        if m and m["point"] == settlement_point and m["market"] == market:
+            found.append(
+                (dt.date.fromisoformat(m["start"]), dt.date.fromisoformat(m["end"]))
+            )
+    return sorted(found, key=lambda w: (w[1], w[0]))

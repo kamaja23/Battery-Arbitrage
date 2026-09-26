@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 
+import numpy as np
 import pandas as pd
 
 from arb.config import HOURS_PER_YEAR, BatteryConfig
@@ -205,8 +206,10 @@ def compare_strategies(
     strategy: Strategy,
     *,
     include_optimal: bool = True,
+    include_forecast: bool = True,
 ) -> pd.DataFrame:
-    """Backtest one battery across baseline, the online rule, and perfect foresight.
+    """Backtest one battery across baseline, the online rule, the forecast-driven
+    strategy, and perfect foresight.
 
     Returns a frame indexed by label with the headline economics for each, so
     the CLI and the UI report the same comparison.
@@ -237,9 +240,15 @@ def compare_strategies(
         series = prepare_price_series(
             prices, result.market, result.settlement_point
         )
-        optimal_net = solve_perfect_foresight(series, battery).net_usd
+        optimal = solve_perfect_foresight(series, battery)
+        optimal_net = optimal.net_usd
+        hours = optimal.to_frame(series.index)
+        optimal_wear = battery.degradation_cost_per_kwh * float(
+            hours["charged_kwh"].sum() + hours["discharged_kwh"].sum()
+        )
     else:
         optimal_net = 0.0
+        optimal_wear = 0.0
 
     capture = online.net_usd / optimal_net if optimal_net > 0 else None
     online_with_capture = compute_metrics(result, capture_ratio=capture)
@@ -257,14 +266,36 @@ def compare_strategies(
         }
     )
 
+    if include_forecast:
+        from arb.strategies.forecast import ForecastStrategy
+
+        planned = run_backtest(prices, battery, ForecastStrategy())
+        f_net = compute_metrics(planned).net_usd
+        f_capture = f_net / optimal_net if optimal_net > 0 else None
+        fm = compute_metrics(planned, capture_ratio=f_capture)
+        rows.append(
+            {
+                "strategy": fm.strategy,
+                "kind": "forecast",
+                "net_usd": fm.net_usd,
+                "net_after_degradation_usd": fm.net_after_degradation_usd,
+                "usd_per_kw_year": fm.usd_per_kw_year,
+                "equivalent_full_cycles": fm.equivalent_full_cycles,
+                "capture_ratio": f_capture,
+                "payback_years": fm.payback_years,
+            }
+        )
+
     if include_optimal and optimal_net > 0:
         rows.append(
             {
                 "strategy": "perfect foresight (upper bound)",
                 "kind": "optimal",
                 "net_usd": optimal_net,
-                "net_after_degradation_usd": float("nan"),
-                "usd_per_kw_year": optimal_net / online_with_capture.duration_years
+                # Same basis as the other rows: after the wear its own schedule causes.
+                "net_after_degradation_usd": optimal_net - optimal_wear,
+                "usd_per_kw_year": (optimal_net - optimal_wear)
+                / online_with_capture.duration_years
                 / battery.power_kw
                 if online_with_capture.duration_years > 0
                 else float("nan"),
@@ -319,3 +350,43 @@ def compare_zones(
     return out.sort_values("usd_per_kw_year", ascending=False).set_index(
         "settlement_point"
     )
+
+
+def rank_stability(tables: Mapping[str, pd.DataFrame]) -> pd.DataFrame:
+    """Line up per-period zone rankings to see whether a winner stays a winner.
+
+    ``tables`` maps a period label (e.g. ``"2026-06"``) to a ``compare_zones``
+    result. Returns one row per zone with its revenue per kW-year in each
+    period, its best and worst rank, and how many periods it finished top 3,
+    sorted by mean revenue.
+    """
+    values = pd.DataFrame(
+        {period: table["usd_per_kw_year"] for period, table in tables.items()}
+    )
+    if values.empty:
+        return values
+    ranks = values.rank(ascending=False, method="min")
+    out = values.copy()
+    out["mean"] = values.mean(axis=1)
+    out["best_rank"] = ranks.min(axis=1).astype(int)
+    out["worst_rank"] = ranks.max(axis=1).astype(int)
+    out["periods_top3"] = (ranks <= 3).sum(axis=1).astype(int)
+    return out.sort_values("mean", ascending=False)
+
+
+def rank_agreement(stability: pd.DataFrame) -> float:
+    """Mean Spearman correlation between every pair of periods' rankings.
+
+    1 means the ordering never changes; near 0 means last period's ranking
+    says nothing about the next.
+    """
+    periods = [
+        c
+        for c in stability.columns
+        if c not in ("mean", "best_rank", "worst_rank", "periods_top3")
+    ]
+    if len(periods) < 2:
+        return float("nan")
+    corr = stability[periods].corr(method="spearman").to_numpy()
+    upper = corr[np.triu_indices(len(periods), k=1)]
+    return float(np.nanmean(upper))

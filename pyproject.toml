@@ -17,9 +17,9 @@ dev = ["pytest>=8", "python-dotenv>=1.0"]
 
 [project.scripts]
 arb = "arb.cli:main"
-arb-backtest = "arb.cli:main"
-arb-verify-data = "arb.cli:main"
-arb-fetch = "arb.cli:main"
+arb-backtest = "arb.cli:backtest_main"
+arb-verify-data = "arb.cli:verify_main"
+arb-fetch = "arb.cli:fetch_main"
 
 [build-system]
 requires = ["hatchling"]

@@ -1,53 +1,93 @@
 """Command line entry points.
 
-Exposed as ``arb-backtest``, ``arb-verify-data`` and ``arb-fetch`` once the
-package is installed; the scripts under ``scripts/`` are thin wrappers so the
-same code runs from a source checkout.
+``arb <command>`` exposes every command. ``arb-backtest``, ``arb-fetch`` and
+``arb-verify-data`` are shortcuts for ``arb backtest`` and friends. The scripts
+under ``scripts/`` are thin wrappers so the same code runs from a source
+checkout.
+
+Cached prices are used whenever they exist, so nothing needs credentials
+unless it has to download a window that is not on disk yet.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 
 import pandas as pd
 
-from arb.config import COMMERCIAL_1MW, RESIDENTIAL_13KWH, BatteryConfig
-from arb.data.cache import cached_fetch
+from arb.config import PRESETS, BatteryConfig
+from arb.data.cache import cached_fetch, load
 from arb.data.ercot_source import ErcotLiveProvider, load_keys_file
 from arb.data.providers import PriceRequest
-from arb.metrics import compare_strategies, compare_zones
-from arb.zones import HUBS, LOAD_ZONES, label_for
+from arb.metrics import compare_strategies, compare_zones, rank_agreement, rank_stability
 from arb.strategies.threshold import ThresholdStrategy
+from arb.zones import HUBS, LOAD_ZONES, label_for
 
 DEFAULT_KEYS = "ERCOT API Keys.txt"
-
-
+DEFAULT_BATTERY = "base_core"
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--zone", default="LZ_WEST", help="settlement point")
-    parser.add_argument("--start", default="2026-06-01", help="first delivery date")
-    parser.add_argument("--end", default="2026-06-30", help="last delivery date")
+    parser.add_argument("--zone", default="LZ_AEN", help="settlement point")
+    parser.add_argument("--start", default="2026-08-26", help="first delivery date")
+    parser.add_argument("--end", default="2026-09-24", help="last delivery date")
     parser.add_argument("--market", default="RTM", choices=["RTM", "DAM"])
     parser.add_argument("--keys", default=DEFAULT_KEYS, help="credentials file")
 
 
-def _load(args: argparse.Namespace) -> pd.DataFrame:
-    load_keys_file(args.keys)
-    request = PriceRequest(
-        settlement_point=args.zone,
+def _add_battery(parser: argparse.ArgumentParser, allow_all: bool = False) -> None:
+    choices = list(PRESETS) + (["all"] if allow_all else [])
+    parser.add_argument(
+        "--battery",
+        default="all" if allow_all else DEFAULT_BATTERY,
+        choices=choices,
+        help="Base battery model" + (" (default: every model)" if allow_all else ""),
+    )
+
+
+def _batteries(choice: str) -> list[BatteryConfig]:
+    return list(PRESETS.values()) if choice == "all" else [PRESETS[choice]]
+
+
+def _keys_ready(path: str) -> bool:
+    """Load credentials if present. Missing credentials only matter on a cache miss."""
+    try:
+        load_keys_file(path)
+        return True
+    except (RuntimeError, OSError):
+        return False
+
+
+def _fetch(request: PriceRequest, keys_ready: bool) -> pd.DataFrame:
+    hit = load(request)
+    if hit is not None:
+        return hit
+    if not keys_ready:
+        raise RuntimeError(
+            f"no cached {request.market} prices for {request.settlement_point} "
+            f"{request.start_date}..{request.end_date}, and no credentials to fetch them"
+        )
+    return cached_fetch(ErcotLiveProvider(), request)
+
+
+def _request(args: argparse.Namespace, zone: str | None = None) -> PriceRequest:
+    return PriceRequest(
+        settlement_point=zone or args.zone,
         start_date=args.start,
         end_date=args.end,
         market=args.market,
     )
-    return cached_fetch(ErcotLiveProvider(), request)
+
+
+def _load(args: argparse.Namespace) -> pd.DataFrame:
+    return _fetch(_request(args), _keys_ready(args.keys))
 
 
 def _describe(prices: pd.DataFrame, args: argparse.Namespace) -> None:
     print(
-        f"{args.zone} {args.market} {args.start}..{args.end}: {len(prices)} intervals, "
+        f"{label_for(args.zone)} {args.market} {args.start}..{args.end}: "
+        f"{len(prices)} intervals, "
         f"{prices['interval_start'].iloc[0].date()} to "
         f"{prices['interval_end'].iloc[-1].date()}"
     )
@@ -63,8 +103,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     prices = _load(args)
     _describe(prices, args)
 
-    batteries: tuple[BatteryConfig, ...] = (COMMERCIAL_1MW, RESIDENTIAL_13KWH)
-    for battery in batteries:
+    for battery in _batteries(args.battery):
         frame = compare_strategies(prices, battery, ThresholdStrategy())
         view = frame[
             [
@@ -73,44 +112,44 @@ def cmd_backtest(args: argparse.Namespace) -> int:
                 "usd_per_kw_year",
                 "equivalent_full_cycles",
                 "capture_ratio",
-                "payback_years",
             ]
         ]
         with pd.option_context("display.width", 200):
-            print(f"\n{battery.name}  "
-                  f"({battery.capacity_kwh:,.0f} kWh / {battery.power_kw:,.0f} kW)")
+            print(
+                f"\n{battery.name}  "
+                f"({battery.capacity_kwh:,.1f} kWh / {battery.power_kw:,.0f} kW)"
+            )
             print(view.round(2).to_string())
 
     print(
         "\nWithout a battery there is no spread to capture, so the baseline is $0.\n"
+        "The forecast strategy plans each day from earlier days' prices only.\n"
         "Perfect foresight sees every future price and is unreachable in practice."
     )
     return 0
 
 
-def cmd_compare_zones(args: argparse.Namespace) -> int:
-    load_keys_file(args.keys)
-    targets = list(LOAD_ZONES) + (list(HUBS) if args.hubs else [])
-
+def _zone_frames(
+    args: argparse.Namespace, targets: list[str], keys_ready: bool
+) -> tuple[dict[str, pd.DataFrame], list[str]]:
     frames: dict[str, pd.DataFrame] = {}
     skipped: list[str] = []
     for target in targets:
-        request = PriceRequest(
-            settlement_point=target,
-            start_date=args.start,
-            end_date=args.end,
-            market=args.market,
-        )
         try:
-            frames[target] = cached_fetch(ErcotLiveProvider(), request)
+            frames[target] = _fetch(_request(args, target), keys_ready)
         except Exception as exc:  # noqa: BLE001 - one bad zone must not stop the rest
             skipped.append(f"{target} ({type(exc).__name__})")
+    return frames, skipped
 
+
+def cmd_compare_zones(args: argparse.Namespace) -> int:
+    targets = list(LOAD_ZONES) + (list(HUBS) if args.hubs else [])
+    frames, skipped = _zone_frames(args, targets, _keys_ready(args.keys))
     if not frames:
         print(f"no prices available for {args.market} {args.start}..{args.end}")
         return 1
 
-    battery = COMMERCIAL_1MW if args.commercial else RESIDENTIAL_13KWH
+    battery = PRESETS[args.battery]
     table = compare_zones(frames, battery, ThresholdStrategy())
     view = table[
         [
@@ -138,6 +177,43 @@ def cmd_compare_zones(args: argparse.Namespace) -> int:
     return 0
 
 
+def _month_bounds(month: str) -> tuple[str, str]:
+    period = pd.Period(month, freq="M")
+    return period.start_time.date().isoformat(), period.end_time.date().isoformat()
+
+
+def cmd_stability(args: argparse.Namespace) -> int:
+    keys_ready = _keys_ready(args.keys)
+    battery = PRESETS[args.battery]
+    targets = list(LOAD_ZONES) + (list(HUBS) if args.hubs else [])
+
+    tables: dict[str, pd.DataFrame] = {}
+    for month in args.months:
+        start, end = _month_bounds(month)
+        month_args = argparse.Namespace(**{**vars(args), "start": start, "end": end})
+        frames, skipped = _zone_frames(month_args, targets, keys_ready)
+        if skipped:
+            print(f"{month}: skipped " + ", ".join(skipped))
+        if frames:
+            tables[month] = compare_zones(frames, battery, ThresholdStrategy())
+
+    if len(tables) < 2:
+        print("need at least two months with data to judge stability")
+        return 1
+
+    stability = rank_stability(tables)
+    print(f"{battery.name}  {args.market}  revenue per kW-year by month\n")
+    with pd.option_context("display.width", 200):
+        print(stability.round(2).to_string())
+    print(
+        f"\nRank agreement between months (mean Spearman): "
+        f"{rank_agreement(stability):.2f}"
+        "\n1.00 means the order never changes; near 0 means one month's ranking "
+        "says little about the next."
+    )
+    return 0
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     prices = _load(args)
     _describe(prices, args)
@@ -146,8 +222,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
 
 def cmd_verify(args: argparse.Namespace) -> int:
-    load_keys_file(args.keys)
-    provider = ErcotLiveProvider()
+    keys_ready = _keys_ready(args.keys)
 
     cases = [
         ("normal", "RTM", "2026-06-15", 96),
@@ -168,7 +243,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
             end_date=day,
             market=market,
         )
-        frame = cached_fetch(provider, request)
+        frame = _fetch(request, keys_ready)
         span = frame["interval_end"].iloc[-1] - frame["interval_start"].iloc[0]
         ok = (
             len(frame) == expected
@@ -187,12 +262,13 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="arb", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    backtest = sub.add_parser("backtest", help="backtest a strategy on real prices")
+    backtest = sub.add_parser("backtest", help="backtest the strategies on real prices")
     _add_common(backtest)
+    _add_battery(backtest, allow_all=True)
     backtest.set_defaults(func=cmd_backtest)
 
     fetch = sub.add_parser("fetch", help="download and cache prices only")
@@ -207,14 +283,52 @@ def main(argv: list[str] | None = None) -> int:
         "compare-zones", help="compare one battery across every load zone"
     )
     _add_common(zones)
+    _add_battery(zones)
     zones.add_argument("--hubs", action="store_true", help="include hubs too")
-    zones.add_argument(
-        "--commercial", action="store_true", help="use the 1 MW / 2 MWh battery"
-    )
     zones.set_defaults(func=cmd_compare_zones)
 
-    args = parser.parse_args(argv)
-    return int(args.func(args))
+    stability = sub.add_parser(
+        "stability", help="check whether zone rankings hold from month to month"
+    )
+    _add_common(stability)
+    _add_battery(stability)
+    stability.add_argument(
+        "--months",
+        nargs="+",
+        default=["2026-04", "2026-05", "2026-06", "2026-07", "2026-08"],
+        help="months as YYYY-MM",
+    )
+    stability.add_argument("--hubs", action="store_true", help="include hubs too")
+    stability.set_defaults(func=cmd_stability)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        return int(args.func(args))
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _shortcut(command: str) -> int:
+    return main([command, *sys.argv[1:]])
+
+
+def backtest_main() -> int:
+    """``arb-backtest``: same as ``arb backtest``."""
+    return _shortcut("backtest")
+
+
+def fetch_main() -> int:
+    """``arb-fetch``: same as ``arb fetch``."""
+    return _shortcut("fetch")
+
+
+def verify_main() -> int:
+    """``arb-verify-data``: same as ``arb verify-data``."""
+    return _shortcut("verify-data")
 
 
 if __name__ == "__main__":

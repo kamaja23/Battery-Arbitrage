@@ -173,7 +173,7 @@ class TestCachedPricesWithoutCredentials:
                 "LZ_WEST", "2026-06-01", "2026-06-14", "RTM", False
             )
         message = str(excinfo.value)
-        assert "no cached RTM prices" in message
+        assert "no cached Real-time (RTM) prices" in message
         assert "LZ_WEST" in message
         assert "credentials" in message
 
@@ -194,3 +194,60 @@ class TestLocationLabels:
         help_text = offline_ui.selectbox[0].help or ""
         assert "service territory" in help_text
 
+
+
+class TestForecastSection:
+    def test_it_shows_a_next_day_plan(self, offline_ui):
+        offline_ui.run()
+        assert any("Looking ahead" in s.value for s in offline_ui.subheader)
+        labels = [m.label for m in offline_ui.metric]
+        assert any(label.startswith("Planned for") for label in labels)
+        assert "vs. 'same as yesterday'" in labels
+
+    def test_the_forecast_strategy_is_in_the_comparison(self, offline_ui):
+        offline_ui.run()
+        table = next(df.value for df in offline_ui.dataframe)
+        assert "forecast" in table.index
+
+
+class TestDefaultWindow:
+    def test_it_opens_on_the_latest_cached_window(self, monkeypatch):
+        import datetime as dt
+
+        import arb.ui as ui
+
+        monkeypatch.setattr(
+            ui,
+            "cached_windows",
+            lambda point, market: [
+                (dt.date(2026, 6, 1), dt.date(2026, 6, 30)),
+                (dt.date(2026, 8, 26), dt.date(2026, 9, 24)),
+                (dt.date(2026, 9, 24), dt.date(2026, 9, 24)),  # too short
+            ],
+        )
+        assert ui._default_window() == (dt.date(2026, 8, 26), dt.date(2026, 9, 24))
+
+    def test_with_nothing_cached_it_falls_back_to_the_last_30_days(self, monkeypatch):
+        import arb.ui as ui
+
+        monkeypatch.setattr(ui, "cached_windows", lambda point, market: [])
+        start, end = ui._default_window()
+        assert (end - start).days == 29
+        assert end == (pd.Timestamp("today").normalize() - pd.Timedelta(days=1)).date()
+
+
+class TestMarketLabels:
+    def test_the_price_picker_uses_plain_names(self, offline_ui):
+        offline_ui.run()
+        picker = offline_ui.radio[1]
+        assert picker.options == ["Real-time (RTM)", "Day-ahead (DAM)"]
+        assert "ERCOT" in (picker.help or "")
+
+    def test_the_explanation_follows_the_choice(self, offline_ui):
+        offline_ui.run()
+        captions = " ".join(c.value for c in offline_ui.caption)
+        assert "every 15 minutes" in captions
+        offline_ui.radio[1].set_value("DAM").run()
+        captions = " ".join(c.value for c in offline_ui.caption)
+        assert "the day before" in captions
+        assert "every 15 minutes" not in captions
