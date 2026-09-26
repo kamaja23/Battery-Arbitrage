@@ -79,7 +79,7 @@ class TestRenders:
     def test_it_shows_the_headline_economics_in_plain_words(self, offline_ui):
         offline_ui.run()
         labels = [m.label for m in offline_ui.metric]
-        for label in ("Made buying low, selling high", "Battery wear", "Kept", "Per year at this pace"):
+        for label in ("Earned buying low, selling high", "Battery wear", "Left after wear", "Per year at this pace"):
             assert label in labels
 
     def test_it_walks_through_the_story_in_order(self, offline_ui):
@@ -222,7 +222,7 @@ class TestStrategies:
             "Forecast planner (what Wattson uses)",
             "Perfect hindsight (impossible in practice)",
         ]
-        assert "Kept after wear ($)" in table.columns
+        assert "Left after wear ($)" in table.columns
         assert table.loc["No battery", "Made ($)"] == 0.0
 
     def test_the_audit_trail_is_still_available(self, offline_ui):
@@ -236,9 +236,9 @@ class TestStrategies:
 class TestInteraction:
     def test_two_cores_keep_twice_as_much_as_one(self, offline_ui):
         offline_ui.run()
-        one = float(_metric(offline_ui, "Kept").value.replace("$", "").replace(",", ""))
+        one = float(_metric(offline_ui, "Left after wear").value.replace("$", "").replace(",", ""))
         offline_ui.number_input[0].set_value(2).run()
-        two = float(_metric(offline_ui, "Kept").value.replace("$", "").replace(",", ""))
+        two = float(_metric(offline_ui, "Left after wear").value.replace("$", "").replace(",", ""))
         assert two == pytest.approx(2 * one, abs=0.02)
 
     def test_every_count_runs_without_error(self, offline_ui):
@@ -255,7 +255,7 @@ class TestInteraction:
         assert not offline_ui.exception
         assert offline_ui.subheader[0].value == "Which part of Texas pays best?"
         assert "comes out on top" in offline_ui.success[0].value
-        assert "a year at this pace" in offline_ui.success[0].value
+        assert "a year after wear, at this pace" in offline_ui.success[0].value
 
     def test_day_ahead_prices_run(self, offline_ui):
         offline_ui.run()
@@ -310,7 +310,7 @@ class TestDemoDefaults:
         offline_ui.run()
         offline_ui.number_input[0].set_value(2).run()
         offline_ui.radio[0].set_value(COMPARE).run()
-        assert "two Base Cores there would have kept" in offline_ui.success[0].value
+        assert "two Base Cores there would have earned" in offline_ui.success[0].value
 
     def test_payback_is_not_claimed_without_a_price(self, offline_ui):
         offline_ui.run()
@@ -528,13 +528,13 @@ class TestDollarSigns:
 
 
 class TestHeadline:
-    def test_it_leads_with_what_the_battery_kept(self, offline_ui):
+    def test_it_leads_with_what_the_battery_earned_then_wear(self, offline_ui):
         offline_ui.run()
         text = offline_ui.success[0].value
-        assert "a Base Core in the Austin Energy area would have kept \\$" in text
+        assert "a Base Core in the Austin Energy area would have earned \\$" in text
+        assert "of battery wear, that leaves \\$" in text
         assert "a year at this pace" in text
         assert "buying power when it was cheap and selling it back" in text
-        assert "battery wear cost" in text
 
     def test_the_window_is_dated_by_its_last_day_not_the_midnight_after(self, offline_ui):
         offline_ui.run()
@@ -544,7 +544,7 @@ class TestHeadline:
     def test_the_loss_message_shows_the_numbers(self, losing_ui):
         losing_ui.run()
         text = losing_ui.error[0].value
-        assert "would not have made money" in text
+        assert "would not have covered its wear" in text
         assert "battery wear cost" in text
         assert "Prices didn't swing enough" in text
 
@@ -590,3 +590,52 @@ def test_worker_processes_do_not_rerun_the_app(monkeypatch):
     spec = importlib.util.spec_from_file_location("__mp_main__", APP)
     spec.loader.exec_module(importlib.util.module_from_spec(spec))
     assert calls == []
+
+
+
+class TestBatteryWear:
+    def test_the_explanation_says_what_actually_wears_out(self, offline_ui):
+        offline_ui.run()
+        help_text = _metric(offline_ui, "Battery wear").help or ""
+        assert "lithium cells age" in help_text
+        assert "permanently loses" in help_text
+        assert "1.2¢ for every kWh" in help_text
+
+    def test_the_glossary_separates_wear_from_other_losses(self, offline_ui):
+        offline_ui.run()
+        text = " ".join(m.value for m in _expander(offline_ui, "What do these words mean?").markdown)
+        assert "lithium cells age" in text
+        assert "not the same as the battery running down" in text
+
+    def test_it_says_who_carries_the_cost(self, offline_ui):
+        offline_ui.run()
+        assert "battery wear is Base's cost, not the homeowner's" in _captions(offline_ui)
+
+    def test_the_wear_cost_is_adjustable_and_starts_at_the_estimate(self, offline_ui):
+        offline_ui.run()
+        slider = offline_ui.slider[0]
+        assert slider.label == "Battery wear cost (¢ per kWh in or out)"
+        assert slider.value == pytest.approx(1.2)
+        assert "instead of Wattson's" not in _captions(offline_ui)
+
+    def test_changing_it_changes_the_result_and_says_so(self, offline_ui):
+        def dollars(label):
+            return float(_metric(offline_ui, label).value.replace("$", "").replace(",", ""))
+
+        offline_ui.run()
+        default_wear = dollars("Battery wear")
+        offline_ui.slider[0].set_value(2.4).run()
+        assert not offline_ui.exception
+        assert "Using 2.4¢ per kWh for battery wear instead of Wattson's 1.2¢ estimate" in _captions(offline_ui)
+        # More expensive wear means more wear cost, and a planner that trades less.
+        assert dollars("Battery wear") != default_wear
+        assert "2.4¢ for every kWh" in (_metric(offline_ui, "Battery wear").help or "")
+
+    def test_zero_wear_leaves_everything_it_earned(self, offline_ui):
+        def dollars(label):
+            return float(_metric(offline_ui, label).value.replace("$", "").replace(",", ""))
+
+        offline_ui.run()
+        offline_ui.slider[0].set_value(0.0).run()
+        assert dollars("Battery wear") == pytest.approx(0.0)
+        assert dollars("Left after wear") == pytest.approx(dollars("Earned buying low, selling high"))

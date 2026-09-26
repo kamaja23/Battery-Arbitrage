@@ -16,6 +16,7 @@ import copy
 import multiprocessing
 import os
 from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 
 import pandas as pd
 
@@ -40,6 +41,23 @@ _CONTEXT.set_forkserver_preload(["wattson.parallel"])
 
 def pool(workers: int) -> ProcessPoolExecutor:
     return ProcessPoolExecutor(max_workers=workers, mp_context=_CONTEXT)
+
+
+# Raised when worker processes cannot start, e.g. when the caller's main module
+# is not a real file (code piped into ``python -``). Callers fall back to
+# running the same jobs one after another.
+WORKER_FAILURES = (BrokenProcessPool, OSError)
+
+
+def run_many(fn, jobs: list, workers: int) -> list:
+    """``[fn(job) for job in jobs]``, on several processes when possible."""
+    if workers > 1 and len(jobs) > 1:
+        try:
+            with pool(min(workers, len(jobs))) as ex:
+                return list(ex.map(fn, jobs))
+        except WORKER_FAILURES:
+            pass
+    return [fn(job) for job in jobs]
 
 
 def backtest_job(args: tuple[pd.DataFrame, BatteryConfig, Strategy]) -> BacktestResult:

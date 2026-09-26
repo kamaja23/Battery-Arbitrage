@@ -335,3 +335,26 @@ class TestParallel:
         got = compare_strategies(prices, BASE_CORE, ThresholdStrategy(), forecast_result=planned)
         assert "forecast" not in calls
         pd.testing.assert_frame_equal(expected, got)
+
+
+def test_parallel_runs_fall_back_when_workers_cannot_start(monkeypatch):
+    """Code piped into ``python -`` has no main file for workers to import."""
+    import sys
+    import types
+
+    from wattson.config import BASE_CORE
+    from wattson.metrics import compare_zones
+    from wattson.strategies.forecast import ForecastStrategy
+
+    frames = {code: TestParallel._long(code, seed) for code, seed in (("LZ_A", 1), ("LZ_B", 2))}
+    expected = compare_zones(frames, BASE_CORE, ForecastStrategy(), workers=1)
+
+    fake_main = types.ModuleType("__main__")
+    fake_main.__file__ = "/nonexistent/<stdin>"
+    monkeypatch.setitem(sys.modules, "__main__", fake_main)
+    got = compare_zones(frames, BASE_CORE, ForecastStrategy(), workers=2)
+    pd.testing.assert_frame_equal(expected, got)
+
+    one = compare_strategies(frames["LZ_A"], BASE_CORE, ThresholdStrategy(), workers=1)
+    many = compare_strategies(frames["LZ_A"], BASE_CORE, ThresholdStrategy(), workers=3)
+    pd.testing.assert_frame_equal(one, many)

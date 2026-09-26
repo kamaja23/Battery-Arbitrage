@@ -113,6 +113,16 @@ The app lets you backtest against either.
   of data. It is scored against "each day repeats the one before" on the same
   intervals. Causality is tested: changing later prices never changes an
   earlier forecast or decision.
+- **Battery wear** is the permanent capacity loss as the lithium cells age
+  with use, which eventually means replacing the battery. Every kWh in or out
+  is charged 1.2¢ as its share of that replacement. This is an estimate: Base
+  doesn't publish cycle life or replacement cost, reasonable values run from
+  about 1¢ to 3¢, and results are very sensitive to it. It can be changed under
+  "More options". Energy lost as heat while charging (about 10%) is counted
+  separately, in what the battery earns.
+- **Who pays for wear**: Base owns and maintains its batteries, so wear is
+  Base's cost, not the homeowner's. "Left after wear" is what the battery's
+  buying and selling is worth once that cost is counted.
 - **Revenue per kW-year** is after battery wear, annualized from the window.
   It is not a projection.
 - **Not modelled**: demand charges, solar self-consumption, backup value,

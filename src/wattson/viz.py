@@ -204,7 +204,7 @@ def zone_comparison_figure(comparison: pd.DataFrame, battery=None) -> go.Figure:
     fig.update_layout(
         title="Annualized revenue per zone (same battery, same window)"
         if battery is None
-        else "What it would keep per year, by area",
+        else "What it would earn per year after wear, by area",
         height=max(340, 30 * len(codes) + 110),
         margin=dict(r=40, t=60, b=40),
         xaxis_title="USD / kW-year" if battery is None else "Dollars per year, after battery wear",
@@ -311,9 +311,9 @@ def daily_earnings_figure(result) -> go.Figure:
 
 
 def strategy_figure(rows: list[tuple[str, float]]) -> go.Figure:
-    """Horizontal bars: what each way of running the battery would have kept.
+    """Horizontal bars: what each way of running the battery would have left after wear.
 
-    ``rows`` are (label, dollars kept after wear), drawn top to bottom. The
+    ``rows`` are (label, dollars left after wear), drawn top to bottom. The
     last row is treated as the unreachable reference and drawn in grey.
     """
     labels = [label for label, _ in rows][::-1]
@@ -327,13 +327,13 @@ def strategy_figure(rows: list[tuple[str, float]]) -> go.Figure:
             x=values, y=labels, orientation="h", marker_color=colors,
             text=[("-$" if v < 0 else "$") + f"{abs(v):,.2f}" for v in values],
             textposition="outside", cliponaxis=False,
-            hovertemplate="%{y}<br>$%{x:,.2f} kept<extra></extra>",
+            hovertemplate="%{y}<br>$%{x:,.2f} left after wear<extra></extra>",
         )
     )
     fig.add_vline(x=0, line=dict(color="#666", width=1))
     fig.update_layout(
         height=90 + 55 * len(rows),
-        xaxis_title="Dollars kept after battery wear",
+        xaxis_title="Dollars left after battery wear",
         yaxis=dict(automargin=True),
         margin=dict(r=80, t=20, b=40),
         showlegend=False,

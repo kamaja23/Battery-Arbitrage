@@ -22,7 +22,14 @@ from wattson.data.ercot_source import ErcotLiveProvider, load_keys_file
 from wattson.data.providers import PriceRequest
 from wattson.metrics import BASELINE_LABEL, compare_strategies, compare_zones, compute_metrics
 from wattson.forecast import forecast_accuracy, plan_next_day
-from wattson.parallel import PARALLEL_MIN_INTERVALS, backtest_job, default_workers, optimal_job, pool
+from wattson.parallel import (
+    PARALLEL_MIN_INTERVALS,
+    WORKER_FAILURES,
+    backtest_job,
+    default_workers,
+    optimal_job,
+    pool,
+)
 from wattson.sim.engine import prepare_price_series, run_backtest
 from wattson.strategies.forecast import ForecastStrategy
 from wattson.strategies.threshold import ThresholdStrategy
@@ -148,11 +155,14 @@ def _run_cached(zone: str, start: str, end: str, market: str, battery, ready: bo
     if len(prices) >= PARALLEL_MIN_INTERVALS:
         # Long windows: run the planner, the simple rule and perfect hindsight
         # at the same time instead of one after another.
-        with pool(3) as ex:
-            planned = ex.submit(backtest_job, (prices, battery, ForecastStrategy()))
-            rule = ex.submit(backtest_job, (prices, battery, ThresholdStrategy()))
-            best = ex.submit(optimal_job, (prices, battery, market, point))
-            result, online, optimal = planned.result(), rule.result(), best.result()
+        try:
+            with pool(3) as ex:
+                planned = ex.submit(backtest_job, (prices, battery, ForecastStrategy()))
+                rule = ex.submit(backtest_job, (prices, battery, ThresholdStrategy()))
+                best = ex.submit(optimal_job, (prices, battery, market, point))
+                result, online, optimal = planned.result(), rule.result(), best.result()
+        except WORKER_FAILURES:
+            result, online, optimal = run_backtest(prices, battery, ForecastStrategy()), None, None
     else:
         result = run_backtest(prices, battery, ForecastStrategy())
     metrics = compute_metrics(result)
@@ -258,6 +268,24 @@ STRATEGY_NAMES = {
     "perfect foresight (upper bound)": "Perfect hindsight (impossible in practice)",
 }
 
+DEFAULT_WEAR_CENTS = 1.2  # cents per kWh in or out; an estimate, Base doesn't publish one
+
+
+def _wear_explainer(cents: float) -> str:
+    return (
+        "Every time a battery charges and discharges, its lithium cells age "
+        "slightly and it permanently loses a little of the energy it can hold. "
+        f"Eventually it has to be replaced. Wattson counts {cents:.1f}¢ for every "
+        "kWh that goes in or out as that trade's share of the replacement."
+    )
+
+
+OWNER_NOTE = (
+    "Base owns and maintains its batteries, so battery wear is Base's cost, not "
+    "the homeowner's. \"Left after wear\" is what the battery's buying and "
+    "selling is worth once that cost is counted."
+)
+
 ZONE_HELP = (
     "The Texas grid is split into pricing areas. Yours depends on which "
     "company delivers your electricity, not just your address. For example, "
@@ -279,9 +307,13 @@ GLOSSARY = {
              "or discharge. A Base Core holds 39.2 kWh and moves up to 11 kW.",
     "Cents per kWh": "The unit on a home electricity bill. Wholesale prices "
              "are usually a few cents, but can jump to dollars during a spike.",
-    "Battery wear": "Every charge and discharge wears a battery slightly. "
-             "Wattson counts that as a cost, so a trade only makes sense when "
-             "the price gap is bigger than the wear.",
+    "Battery wear": "The slow, permanent loss of capacity as a battery's "
+             "lithium cells age with use, which eventually means replacing it. "
+             "Wattson counts it as a cost on every kWh in or out, so a trade only "
+             "happens when the price gap is bigger than the wear. Base carries "
+             "this cost, not the homeowner. It is not the same as the battery "
+             "running down during use, or energy lost as heat, which is counted "
+             "separately.",
     "Trading hub": "A regional average price that energy traders use. Homes "
              "are not billed at hub prices.",
 }
@@ -373,6 +405,20 @@ def main() -> None:
                      + " Day-ahead (DAM): " + MARKET_EXPLAINERS["DAM"],
             )
             st.caption(MARKET_EXPLAINERS[market])
+            wear_cents = st.slider(
+                "Battery wear cost (¢ per kWh in or out)",
+                0.0, 5.0, DEFAULT_WEAR_CENTS, 0.1,
+                help="How much each kWh the battery moves ages it, as a share of "
+                     "an eventual replacement. Base doesn't publish this; "
+                     f"{DEFAULT_WEAR_CENTS}¢ is Wattson's estimate for a lithium "
+                     "iron phosphate battery like Base Core. Results depend "
+                     "heavily on it.",
+            )
+            if abs(wear_cents - DEFAULT_WEAR_CENTS) > 1e-9:
+                st.caption(
+                    f"Using {wear_cents:.1f}¢ per kWh for battery wear instead of "
+                    f"Wattson's {DEFAULT_WEAR_CENTS}¢ estimate."
+                )
             custom = st.checkbox("Try a custom battery size", value=False)
             if custom:
                 capacity = st.slider("How much it holds (kWh)", 5.0, 200.0, float(preset.capacity_kwh), 0.1)
@@ -395,6 +441,7 @@ def main() -> None:
                 )
             else:
                 battery = preset
+            battery = replace(battery, degradation_cost_per_kwh=wear_cents / 100)
         if not credentials_ready:
             st.warning(
                 "Offline: showing saved prices only. Add ERCOT API credentials "
@@ -448,45 +495,47 @@ def _headline(prices, metrics, battery, battery_name: str, zone: str, market: st
     last = prices["interval_start"].iloc[-1]
     days = (last.date() - first.date()).days + 1
     made = metrics.net_usd
-    kept = metrics.net_after_degradation_usd
-    wear = made - kept
-    per_year = kept / metrics.duration_days * 365 if metrics.duration_days else 0.0
+    left = metrics.net_after_degradation_usd
+    wear = made - left
+    per_year = left / metrics.duration_days * 365 if metrics.duration_days else 0.0
     where = f"in the {short_name(zone)} area"
 
-    if kept > 0:
+    if left > 0:
         st.success(_md(
             f"**Over these {days} days ({span}), {battery_name} {where} would "
-            f"have kept {_money(kept, 2)}**"
+            f"have earned {_money(made, 2)} by buying power when it was cheap and "
+            f"selling it back when it was expensive.** After {_money(wear, 2)} of "
+            f"battery wear, that leaves {_money(left, 2)}"
             + ("." if days >= 360 else f", about {_money(per_year)} a year at this pace.")
-            + f" It made {_money(made, 2)} by buying power when it was "
-            f"cheap and selling it back when it was expensive, and battery wear "
-            f"cost {_money(wear, 2)}."
         ))
     else:
         st.error(_md(
             f"**Over these {days} days ({span}), {battery_name} {where} would "
-            f"not have made money.** It made {_money(made, 2)} buying low and "
-            f"selling high, but battery wear cost {_money(wear, 2)}, leaving "
-            f"{_money(kept, 2)}. Prices didn't swing enough to cover the wear."
+            f"not have covered its wear.** It would have earned {_money(made, 2)} "
+            f"buying low and selling high, but battery wear cost {_money(wear, 2)}, "
+            f"leaving {_money(left, 2)}. Prices didn't swing enough to cover the wear."
         ))
 
     has_cost = bool(battery.installed_cost_usd)
     cols = st.columns(5 if has_cost else 4)
     cols[0].metric(
-        "Made buying low, selling high", _money(made, 2),
+        "Earned buying low, selling high", _money(made, 2),
         help="What the battery got for the power it sold, minus what it paid "
              "to charge, over these dates.",
     )
     cols[1].metric(
         "Battery wear", _money(-wear, 2),
-        help=f"Every charge and discharge wears the battery a little. Wattson "
-             f"counts {battery.degradation_cost_per_kwh * 100:.1f}¢ for every "
-             f"kWh that goes in or out.",
+        help=_wear_explainer(battery.degradation_cost_per_kwh * 100)
+             + " Adjust it under More options.",
     )
-    cols[2].metric("Kept", _money(kept, 2), help="What's left after battery wear.")
+    cols[2].metric(
+        "Left after wear", _money(left, 2),
+        help="What the battery's buying and selling is worth once wear is "
+             "counted. Base carries the wear, not the homeowner.",
+    )
     cols[3].metric(
         "Per year at this pace", _money(per_year),
-        help="What it kept, scaled up to a full year. Prices change a lot from "
+        help="What's left after wear, scaled up to a full year. Prices change a lot from "
              "month to month, so treat this as a rough guide, not a promise.",
     )
     if has_cost:
@@ -494,8 +543,9 @@ def _headline(prices, metrics, battery, battery_name: str, zone: str, market: st
         cols[4].metric(
             "Pays for itself in",
             f"{years:,.0f} years" if years else "Not at this pace",
-            help="Purchase price divided by what it keeps per year.",
+            help="Purchase price divided by what's left after wear each year.",
         )
+    st.caption(OWNER_NOTE)
 
     p = prices["price_usd_per_mwh"]
     latest = (
@@ -583,9 +633,9 @@ def _day_by_day(result) -> None:
 
 def _strategy_section(comparison: pd.DataFrame) -> None:
     st.subheader("How smart does the battery need to be?")
-    st.markdown("The same battery over the same dates, run four ways. Bars show what each would have kept after battery wear.")
-    kept = comparison["net_after_degradation_usd"]
-    rows = [(STRATEGY_NAMES[label], float(kept[label])) for label in comparison.index if label in STRATEGY_NAMES]
+    st.markdown("The same battery over the same dates, run four ways. Bars show what each would have left after battery wear.")
+    left = comparison["net_after_degradation_usd"]
+    rows = [(STRATEGY_NAMES[label], float(left[label])) for label in comparison.index if label in STRATEGY_NAMES]
     st.plotly_chart(strategy_figure(rows), width="stretch")
     st.markdown(_md(
         "- **No battery**: nothing to buy or sell, so $0.\n"
@@ -609,15 +659,15 @@ def _forecast_section(plan, plan_error, accuracy, battery) -> None:
     frame = plan.to_frame()
     hourly = frame.groupby(pd.DatetimeIndex(frame["interval_start"]).hour)["forecast_usd_per_mwh"].mean()
     cheap, peak = _hour(pd.Timestamp(2000, 1, 1, int(hourly.idxmin()))), _hour(pd.Timestamp(2000, 1, 1, int(hourly.idxmax())))
-    kept = plan.expected_net_after_wear_usd
+    left = plan.expected_net_after_wear_usd
     trades = plan.charge_kw.sum() > 1e-6
     text = (
         f"Based on the past week, Wattson expects power on {plan.date:%A, %B %-d} "
         f"to be cheapest around {cheap} and most expensive around {peak}. "
     )
     text += (
-        f"Its plan: buy when it's cheap and sell into the peak, keeping about "
-        f"{_money(kept, 2)} if prices behave as expected."
+        f"Its plan: buy when it's cheap and sell into the peak, leaving about "
+        f"{_money(left, 2)} after wear if prices behave as expected."
         if trades
         else "The expected price swing is too small to cover battery wear, so the plan is to sit still."
     )
@@ -652,7 +702,7 @@ def _details(prices, result, metrics, comparison, zone: str, market: str) -> Non
         ].rename(
             columns={
                 "net_usd": "Made ($)",
-                "net_after_degradation_usd": "Kept after wear ($)",
+                "net_after_degradation_usd": "Left after wear ($)",
                 "usd_per_kw_year": "$ per kW per year",
                 "equivalent_full_cycles": "Full charge cycles",
                 "capture_ratio": "Share of perfect hindsight",
@@ -663,7 +713,7 @@ def _details(prices, result, metrics, comparison, zone: str, market: str) -> Non
             table.style.format(
                 {
                     "Made ($)": "${:,.2f}",
-                    "Kept after wear ($)": "${:,.2f}",
+                    "Left after wear ($)": "${:,.2f}",
                     "$ per kW per year": "${:,.2f}",
                     "Full charge cycles": "{:,.1f}",
                     "Share of perfect hindsight": "{:.0%}",
@@ -754,7 +804,7 @@ def _zone_comparison(
     if annual[best] > 0:
         st.success(_md(
             f"**{short_name(best)} comes out on top**: {battery_name} there "
-            f"would have kept about {_money(annual[best])} a year at this pace."
+            f"would have earned about {_money(annual[best])} a year after wear, at this pace."
         ))
     else:
         st.error(_md(
@@ -765,7 +815,7 @@ def _zone_comparison(
     st.plotly_chart(zone_comparison_figure(comparison, battery), width="stretch")
 
     span = _span(span_frame)
-    note = f"{_market_name(market)} prices, {span}. Each bar is what {battery_name} would keep per year after battery wear, at the pace of these dates."
+    note = f"{_market_name(market)} prices, {span}. Each bar is what {battery_name} would earn per year after battery wear, at the pace of these dates."
     if skipped:
         note += " No saved prices for: " + ", ".join(label_for(code) for code in skipped) + "."
     st.caption(_md(note))
@@ -775,7 +825,7 @@ def _zone_comparison(
             {
                 "Area": [label_for(code) for code in comparison.index],
                 "Made ($)": comparison["net_usd"].round(2),
-                "Kept after wear ($)": comparison["net_after_degradation_usd"].round(2),
+                "Left after wear ($)": comparison["net_after_degradation_usd"].round(2),
                 "Per year ($)": annual.round(0),
                 "Average price (¢ per kWh)": (comparison["mean_price_usd_per_mwh"] / 10).round(2),
                 "Priciest 5% of the time (¢ per kWh)": (comparison["p95_price_usd_per_mwh"] / 10).round(2),

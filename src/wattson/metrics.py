@@ -222,7 +222,13 @@ def compare_strategies(
     With ``workers > 1`` and a long enough window, whatever still needs running
     runs in parallel processes.
     """
-    from wattson.parallel import PARALLEL_MIN_INTERVALS, backtest_job, optimal_job, pool
+    from wattson.parallel import (
+        PARALLEL_MIN_INTERVALS,
+        WORKER_FAILURES,
+        backtest_job,
+        optimal_job,
+        pool,
+    )
     from wattson.sim.engine import _resolve_market, run_backtest
     from wattson.strategies.forecast import ForecastStrategy
     from wattson.strategies.perfect_foresight import solve_perfect_foresight
@@ -234,13 +240,16 @@ def compare_strategies(
     jobs = (online_result is None) + need_optimal + need_forecast
     if workers > 1 and jobs > 1 and point and len(prices) >= PARALLEL_MIN_INTERVALS:
         market = _resolve_market(prices, "RTM", point)
-        with pool(min(workers, jobs)) as ex:
-            f_online = ex.submit(backtest_job, (prices, battery, strategy)) if online_result is None else None
-            f_optimal = ex.submit(optimal_job, (prices, battery, market, point)) if need_optimal else None
-            f_forecast = ex.submit(backtest_job, (prices, battery, ForecastStrategy())) if need_forecast else None
-            online_result = f_online.result() if f_online else online_result
-            optimal_solution = f_optimal.result() if f_optimal else optimal_solution
-            forecast_result = f_forecast.result() if f_forecast else forecast_result
+        try:
+            with pool(min(workers, jobs)) as ex:
+                f_online = ex.submit(backtest_job, (prices, battery, strategy)) if online_result is None else None
+                f_optimal = ex.submit(optimal_job, (prices, battery, market, point)) if need_optimal else None
+                f_forecast = ex.submit(backtest_job, (prices, battery, ForecastStrategy())) if need_forecast else None
+                online_result = f_online.result() if f_online else online_result
+                optimal_solution = f_optimal.result() if f_optimal else optimal_solution
+                forecast_result = f_forecast.result() if f_forecast else forecast_result
+        except WORKER_FAILURES:
+            pass  # anything still missing is computed below, one at a time
 
     result = online_result if online_result is not None else run_backtest(prices, battery, strategy)
     online = compute_metrics(result)
@@ -353,16 +362,12 @@ def compare_zones(
     on the same battery, window, and market so the differences come from the
     price shape alone.
     """
-    from wattson.parallel import PARALLEL_MIN_INTERVALS, backtest_job, pool
-    from wattson.sim.engine import run_backtest
+    from wattson.parallel import PARALLEL_MIN_INTERVALS, backtest_job, run_many
 
     items = list(frames.items())
     total = sum(len(frame) for _, frame in items)
-    if workers > 1 and len(items) > 1 and total >= PARALLEL_MIN_INTERVALS:
-        with pool(min(workers, len(items))) as ex:
-            results = list(ex.map(backtest_job, [(f, battery, strategy) for _, f in items]))
-    else:
-        results = [run_backtest(frame, battery, strategy) for _, frame in items]
+    use = workers if total >= PARALLEL_MIN_INTERVALS else 1
+    results = run_many(backtest_job, [(f, battery, strategy) for _, f in items], use)
 
     rows: list[dict[str, object]] = []
     for (zone, frame), result in zip(items, results):
