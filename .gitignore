@@ -1,0 +1,21 @@
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+data/cache/*.csv
+data/cache/*.parquet
+outputs/
+*.html
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+ERCOT API Keys.txt
+battery-arbitrage-framework.pdf
+*keys*.txt
+*secret*
