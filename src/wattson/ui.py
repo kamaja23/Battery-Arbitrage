@@ -270,6 +270,50 @@ STRATEGY_NAMES = {
 
 DEFAULT_WEAR_CENTS = 1.2  # cents per kWh in or out; an estimate, Base doesn't publish one
 
+# Base's fees for a Core in Texas, the only grid Wattson covers.
+BASE_MONTHLY_FEE = 19.0
+BASE_INSTALL_FEE = 695.0
+FEE_SOURCE = (
+    "Base's fees in Texas: $695 to install and $19 a month "
+    "(basepowercompany.com/pricing)."
+)
+
+
+def fee_coverage(per_year: float, monthly_fee: float, install_fee: float) -> str:
+    """How much of Base's plan fees the battery's grid trading would pay for.
+
+    The fees are what the homeowner pays Base; the trading earnings go to Base.
+    Setting one against the other shows how far trading alone goes toward the
+    plan, from Base's side of the ledger.
+    """
+    monthly_fee_text = _money(monthly_fee, 2 if monthly_fee % 1 else 0)
+    per_month = per_year / 12
+    if per_year <= 0:
+        return (
+            "At this pace, the battery's grid trading wouldn't pay for any of the "
+            f"{monthly_fee_text} monthly fee."
+        )
+    share = per_year / (12 * monthly_fee)
+    if share >= 1:
+        text = (
+            "At this pace, the battery's grid trading would pay for all of the "
+            f"{monthly_fee_text} monthly fee, with about {_money(per_month - monthly_fee, 2)} "
+            "a month to spare."
+        )
+    else:
+        text = (
+            "At this pace, the battery's grid trading would pay for about "
+            f"{share:.0%} of the {monthly_fee_text} monthly fee: about "
+            f"{_money(per_month, 2)} of it each month."
+        )
+    if install_fee > 0:
+        first_year = install_fee + 12 * monthly_fee
+        text += (
+            f" Counting the {_money(install_fee)} install fee, it would cover about "
+            f"{min(per_year / first_year, 1):.0%} of the first year's {_money(first_year)}."
+        )
+    return text
+
 
 def _wear_explainer(cents: float) -> str:
     return (
@@ -469,7 +513,8 @@ def main() -> None:
         st.error(_md(f"Couldn't load prices for {label_for(zone)} from {start} to {end}: {exc}"))
         return
 
-    _headline(prices, metrics, battery, battery_name, zone, market)
+    per_year = _headline(prices, metrics, battery, battery_name, zone, market)
+    _fee_section(per_year, count, custom)
     _data_notes(prices, end_date, _today())
     _day_in_the_life(result)
     _day_by_day(result)
@@ -489,7 +534,7 @@ def _span(prices: pd.DataFrame) -> str:
     return f"{head} – {last_day:%b %-d, %Y}"
 
 
-def _headline(prices, metrics, battery, battery_name: str, zone: str, market: str) -> None:
+def _headline(prices, metrics, battery, battery_name: str, zone: str, market: str) -> float:
     span = _span(prices)
     first = prices["interval_start"].iloc[0]
     last = prices["interval_start"].iloc[-1]
@@ -557,6 +602,20 @@ def _headline(prices, metrics, battery, battery_name: str, zone: str, market: st
         f"{label_for(zone)} · {_market_name(market)} prices from {span} ranged "
         f"from {_cents(p.min())} to {_cents(p.max())} per kWh.{latest}"
     ))
+    return per_year
+
+
+def _fee_section(per_year: float, count: int, custom: bool) -> None:
+    """Base's side of the ledger: how far grid trading goes toward the plan fees."""
+    st.markdown(_md(f"**{fee_coverage(per_year, BASE_MONTHLY_FEE, BASE_INSTALL_FEE)}**"))
+    note = FEE_SOURCE
+    if count > 1 and not custom:
+        note += " The fees shown are for one Core; plans with two may differ."
+    note += (
+        " Grid trading is only part of what a Base battery is worth: backup, the "
+        "electricity plan and other grid services aren't included here."
+    )
+    st.caption(_md(note))
 
 
 def _day_in_the_life(result) -> None:
@@ -800,11 +859,19 @@ def _zone_comparison(
         return
 
     annual = comparison["usd_per_kw_year"] * battery.power_kw
+    monthly_fee = BASE_MONTHLY_FEE
     best = annual.idxmax()
     if annual[best] > 0:
+        share = annual[best] / (12 * monthly_fee)
+        fee_share = (
+            f", more than enough to cover Base's {_money(monthly_fee)} monthly fee"
+            if share >= 1
+            else f", enough for about {share:.0%} of Base's {_money(monthly_fee)} monthly fee"
+        )
         st.success(_md(
             f"**{short_name(best)} comes out on top**: {battery_name} there "
-            f"would have earned about {_money(annual[best])} a year after wear, at this pace."
+            f"would have earned about {_money(annual[best])} a year after wear, at "
+            f"this pace{fee_share}."
         ))
     else:
         st.error(_md(
@@ -827,6 +894,7 @@ def _zone_comparison(
                 "Made ($)": comparison["net_usd"].round(2),
                 "Left after wear ($)": comparison["net_after_degradation_usd"].round(2),
                 "Per year ($)": annual.round(0),
+                "Share of monthly fee": (annual / (12 * monthly_fee)).clip(lower=0).map("{:.0%}".format),
                 "Average price (¢ per kWh)": (comparison["mean_price_usd_per_mwh"] / 10).round(2),
                 "Priciest 5% of the time (¢ per kWh)": (comparison["p95_price_usd_per_mwh"] / 10).round(2),
             },

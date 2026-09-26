@@ -123,6 +123,10 @@ The app lets you backtest against either.
 - **Who pays for wear**: Base owns and maintains its batteries, so wear is
   Base's cost, not the homeowner's. "Left after wear" is what the battery's
   buying and selling is worth once that cost is counted.
+- **Plan fees**: the page shows how much of Base's fees for a Core in Texas,
+  $695 to install and $19 a month, the battery's grid trading would pay for.
+  The fees are what a homeowner pays Base, and the trading earnings go to Base,
+  so this reads from Base's side of the ledger.
 - **Revenue per kW-year** is after battery wear, annualized from the window.
   It is not a projection.
 - **Not modelled**: demand charges, solar self-consumption, backup value,

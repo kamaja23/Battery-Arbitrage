@@ -55,6 +55,10 @@ def _captions(app) -> str:
     return " ".join(c.value for c in app.caption)
 
 
+def _number(app, label_start: str):
+    return next(n for n in app.number_input if n.label.startswith(label_start))
+
+
 def _expander(app, label: str):
     return next(e for e in app.expander if e.label == label)
 
@@ -265,7 +269,7 @@ class TestInteraction:
     def test_a_purchase_price_adds_a_payback_figure(self, offline_ui):
         offline_ui.run()
         offline_ui.checkbox[0].set_value(True).run()
-        offline_ui.number_input[1].set_value(15_000.0).run()
+        _number(offline_ui, "Purchase price").set_value(15_000.0).run()
         assert not offline_ui.exception
         assert "Pays for itself in" in [m.label for m in offline_ui.metric]
 
@@ -639,3 +643,77 @@ class TestBatteryWear:
         offline_ui.slider[0].set_value(0.0).run()
         assert dollars("Battery wear") == pytest.approx(0.0)
         assert dollars("Left after wear") == pytest.approx(dollars("Earned buying low, selling high"))
+
+
+
+class TestPlanFees:
+    """Option 2: how much of Base's plan fees the battery's grid trading pays for."""
+
+    def test_the_fees_are_fixed_not_adjustable(self, offline_ui):
+        offline_ui.run()
+        labels = [n.label for n in offline_ui.number_input]
+        assert not any("fee" in label.lower() for label in labels)
+        assert "Base's fees in Texas: \\$695 to install and \\$19 a month" in _captions(offline_ui)
+
+    def test_the_page_says_how_much_of_the_fee_trading_covers(self, offline_ui):
+        offline_ui.run()
+        text = " ".join(m.value for m in offline_ui.markdown)
+        assert re.search(r"would pay for about \d+% of the \\\$19 monthly fee", text)
+        assert "install fee" in text and "first year" in text
+        captions = _captions(offline_ui)
+        assert "basepowercompany.com/pricing" in captions
+        assert "Grid trading is only part of what a Base battery is worth" in captions
+
+    def test_more_than_one_core_notes_the_fee_is_for_one(self, offline_ui):
+        offline_ui.run()
+        assert "fees shown are for one Core" not in _captions(offline_ui)
+        offline_ui.number_input[0].set_value(2).run()
+        assert "fees shown are for one Core" in _captions(offline_ui)
+
+    def test_the_comparison_view_shows_the_fee_share(self, offline_ui):
+        offline_ui.run()
+        offline_ui.radio[0].set_value(COMPARE).run()
+        assert re.search(r"enough for about \d+% of Base's \\\$19 monthly fee", offline_ui.success[0].value)
+        table = _expander(offline_ui, "Show the detailed numbers").dataframe[0].value
+        assert "Share of monthly fee" in table.columns
+
+
+class TestFeeCoverage:
+    def test_partial_coverage(self):
+        from wattson.ui import fee_coverage
+
+        text = fee_coverage(114.0, 19.0, 695.0)
+        assert "about 50% of the $19 monthly fee: about $9.50 of it each month" in text
+        assert "about 12% of the first year's $923" in text
+
+    def test_more_than_the_whole_fee(self):
+        from wattson.ui import fee_coverage
+
+        text = fee_coverage(300.0, 19.0, 0.0)
+        assert "all of the $19 monthly fee, with about $6.00 a month to spare" in text
+        assert "install" not in text
+
+    def test_no_coverage_when_trading_loses_money(self):
+        from wattson.ui import fee_coverage
+
+        assert "wouldn't pay for any of the $19 monthly fee" in fee_coverage(-5.0, 19.0, 695.0)
+
+    def test_cents_in_the_fee_are_kept(self):
+        from wattson.ui import fee_coverage
+
+        assert "$19.99 monthly fee" in fee_coverage(100.0, 19.99, 0.0)
+
+
+def test_the_comparison_says_when_trading_covers_the_whole_fee(monkeypatch):
+    import wattson.ui as ui
+
+    st.cache_data.clear()
+    spiky = _synthetic().assign(price_usd_per_mwh=lambda f: f["price_usd_per_mwh"] * 40)
+    monkeypatch.setattr(ui, "_prices_cached", lambda *a, **k: spiky)
+    monkeypatch.setattr(ui, "_load_credentials", lambda: False)
+    app = AppTest.from_file(APP, default_timeout=120)
+    app.run()
+    app.radio[0].set_value(COMPARE).run()
+    text = app.success[0].value
+    assert "more than enough to cover Base's \\$19 monthly fee" in text
+    assert "100%" not in text
