@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from arb.config import BatteryConfig, usd_from_mwh
+from wattson.config import BatteryConfig, usd_from_mwh
 
 
 @dataclass(slots=True)

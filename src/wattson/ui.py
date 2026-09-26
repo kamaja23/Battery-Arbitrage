@@ -1,4 +1,4 @@
-"""Streamlit front end.
+"""Wattson's Streamlit front end.
 
 Answers the homeowner question the product is built around: "if I put a
 battery in my ERCOT zone, what does it earn?"
@@ -16,22 +16,22 @@ from dataclasses import replace
 import pandas as pd
 import streamlit as st
 
-from arb.config import PRESETS, BatteryConfig
-from arb.data.cache import cached_fetch, cached_windows, load
-from arb.data.ercot_source import ErcotLiveProvider, load_keys_file
-from arb.data.providers import PriceRequest
-from arb.metrics import compare_strategies, compare_zones, compute_metrics
-from arb.forecast import forecast_accuracy, plan_next_day
-from arb.sim.engine import prepare_price_series, run_backtest
-from arb.strategies.threshold import ThresholdStrategy
-from arb.viz import (
+from wattson.config import PRESETS, BatteryConfig
+from wattson.data.cache import cached_fetch, cached_windows, load
+from wattson.data.ercot_source import ErcotLiveProvider, load_keys_file
+from wattson.data.providers import PriceRequest
+from wattson.metrics import compare_strategies, compare_zones, compute_metrics
+from wattson.forecast import forecast_accuracy, plan_next_day
+from wattson.sim.engine import prepare_price_series, run_backtest
+from wattson.strategies.threshold import ThresholdStrategy
+from wattson.viz import (
     cumulative_revenue_figure,
     daily_revenue_figure,
     dispatch_figure,
     forecast_plan_figure,
     zone_comparison_figure,
 )
-from arb.zones import HUBS, LOAD_ZONES, label_for
+from wattson.zones import HUBS, LOAD_ZONES, label_for
 
 
 # Intertrust's published range for optimized pure RTM arbitrage, used only as
@@ -138,8 +138,9 @@ def _metrics_row(metrics, title: str, has_cost: bool = True) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="ERCOT Battery Arbitrage", layout="wide")
-    st.title("Would a Base battery pay for itself in your ERCOT zone?")
+    st.set_page_config(page_title="Wattson", layout="wide")
+    st.title("Wattson")
+    st.header("Would a Base battery pay for itself in your ERCOT zone?")
 
     credentials_ready = _load_credentials()
 
@@ -411,7 +412,7 @@ def _zone_comparison(
         st.caption(
             "No cached prices for: "
             + ", ".join(label_for(code) for code in skipped)
-            + ". Fetch them with `arb fetch` to include them here."
+            + ". Fetch them with `wattson fetch` to include them here."
         )
     st.caption(
         "Annualized from this historical window only. Not a forecast, and it "

@@ -5,9 +5,9 @@ from tempfile import TemporaryDirectory
 
 import pandas as pd
 
-from arb.config import CENTRAL_TIME
-from arb.data.cache import cached_fetch, cache_path, load, save
-from arb.data.providers import SyntheticProvider
+from wattson.config import CENTRAL_TIME
+from wattson.data.cache import cached_fetch, cache_path, load, save
+from wattson.data.providers import SyntheticProvider
 
 
 def test_missing_cache_returns_none(rtm_request, tmp_path):
@@ -33,7 +33,7 @@ def test_round_trip_preserves_central_timezone(rtm_request, tmp_path):
 
 
 def test_round_trip_survives_a_dst_short_day():
-    from arb.data.providers import PriceRequest
+    from wattson.data.providers import PriceRequest
 
     request = PriceRequest(
         settlement_point="LZ_NORTH",
@@ -99,7 +99,7 @@ class TestCachedWindows:
     def test_it_lists_windows_for_one_point_and_market(self, tmp_path):
         import datetime as dt
 
-        from arb.data.cache import cached_windows
+        from wattson.data.cache import cached_windows
 
         for name in (
             "RTM_LZ_AEN_2026-06-01_2026-06-30.csv",
@@ -116,6 +116,6 @@ class TestCachedWindows:
         ]
 
     def test_an_empty_or_missing_cache_is_fine(self, tmp_path):
-        from arb.data.cache import cached_windows
+        from wattson.data.cache import cached_windows
 
         assert cached_windows("LZ_AEN", "RTM", tmp_path / "nope") == []

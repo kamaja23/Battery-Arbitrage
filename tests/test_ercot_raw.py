@@ -3,9 +3,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from arb.config import CENTRAL_TIME
-from arb.data.ercot_source import ErcotLiveProvider, infer_location_type
-from arb.data.providers import PriceRequest
+from wattson.config import CENTRAL_TIME
+from wattson.data.ercot_source import ErcotLiveProvider, infer_location_type
+from wattson.data.providers import PriceRequest
 
 # Shapes below mirror what api.ercot.com actually returns, verified live:
 #   RTM -> 7 positional columns, interval numbered 1-4 *within* each hour,

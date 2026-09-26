@@ -3,16 +3,16 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from arb.config import COMMERCIAL_1MW, RESIDENTIAL_13KWH, BatteryConfig
-from arb.data.providers import PriceRequest, SyntheticProvider
-from arb.metrics import (
+from wattson.config import COMMERCIAL_1MW, RESIDENTIAL_13KWH, BatteryConfig
+from wattson.data.providers import PriceRequest, SyntheticProvider
+from wattson.metrics import (
     BASELINE_LABEL,
     compare_strategies,
     compute_metrics,
     no_battery_baseline,
 )
-from arb.sim.engine import run_backtest
-from arb.strategies.threshold import ThresholdStrategy
+from wattson.sim.engine import run_backtest
+from wattson.strategies.threshold import ThresholdStrategy
 
 
 @pytest.fixture
@@ -164,7 +164,7 @@ def test_dam_only_frame_infers_market() -> None:
 def _synthetic_dam_prices() -> pd.DataFrame:
     import numpy as np
 
-    from arb.config import CENTRAL_TIME
+    from wattson.config import CENTRAL_TIME
 
     index = pd.date_range("2026-06-01 00:00", periods=24, freq="1h", tz=CENTRAL_TIME)
     values = 20 + 25 * np.sin(np.arange(24) / 24 * 2 * np.pi)
@@ -189,8 +189,8 @@ def test_compare_zones_ranks_by_return_across_locations() -> None:
     """
     import numpy as np
 
-    from arb.config import CENTRAL_TIME
-    from arb.metrics import compare_zones
+    from wattson.config import CENTRAL_TIME
+    from wattson.metrics import compare_zones
 
     def frame(sp: str, swing: float) -> pd.DataFrame:
         index = pd.date_range(
@@ -226,7 +226,7 @@ def test_compare_zones_ranks_by_return_across_locations() -> None:
 
 
 def test_compare_zones_handles_no_input() -> None:
-    from arb.metrics import compare_zones
+    from wattson.metrics import compare_zones
 
     out = compare_zones({}, COMMERCIAL_1MW, ThresholdStrategy())
 
@@ -242,7 +242,7 @@ class TestRankStability:
         )
 
     def test_it_lines_up_each_zone_across_periods(self):
-        from arb.metrics import rank_stability
+        from wattson.metrics import rank_stability
 
         out = rank_stability(
             {
@@ -256,14 +256,14 @@ class TestRankStability:
         assert out.loc["LZ_C", "periods_top3"] == 2
 
     def test_agreement_is_one_when_the_order_never_changes(self):
-        from arb.metrics import rank_agreement, rank_stability
+        from wattson.metrics import rank_agreement, rank_stability
 
         same = {"LZ_A": 5.0, "LZ_B": 3.0, "LZ_C": 1.0}
         out = rank_stability({"m1": self._table(same), "m2": self._table(same)})
         assert rank_agreement(out) == pytest.approx(1.0)
 
     def test_agreement_is_negative_when_the_order_flips(self):
-        from arb.metrics import rank_agreement, rank_stability
+        from wattson.metrics import rank_agreement, rank_stability
 
         out = rank_stability(
             {

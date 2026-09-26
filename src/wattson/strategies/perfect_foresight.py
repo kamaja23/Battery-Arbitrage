@@ -15,8 +15,8 @@ import numpy as np
 import pandas as pd
 import pulp
 
-from arb.config import BatteryConfig, usd_from_mwh
-from arb.sim.battery import BatteryState
+from wattson.config import BatteryConfig, usd_from_mwh
+from wattson.sim.battery import BatteryState
 
 _SCALE = 1000.0
 
@@ -150,7 +150,7 @@ def run_perfect_foresight_backtest(
     settlement_point: str | None = None,
 ) -> tuple[pd.DataFrame, float]:
     """Solve the LP and return a ledger-shaped frame plus net revenue."""
-    from arb.sim.engine import prepare_price_series
+    from wattson.sim.engine import prepare_price_series
 
     if settlement_point is None:
         points = sorted(prices["settlement_point"].unique())

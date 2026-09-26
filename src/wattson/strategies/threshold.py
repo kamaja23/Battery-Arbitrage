@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from arb.strategies.base import Action, DecisionContext, Strategy
+from wattson.strategies.base import Action, DecisionContext, Strategy
 
 
 @dataclass(slots=True)

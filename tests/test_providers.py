@@ -3,8 +3,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from arb.config import CENTRAL_TIME
-from arb.data.providers import (
+from wattson.config import CENTRAL_TIME
+from wattson.data.providers import (
     PRICE_COLUMNS,
     SyntheticProvider,
     validate_price_frame,
@@ -98,7 +98,7 @@ class TestSyntheticProvider:
         assert frame["price_usd_per_mwh"].quantile(0.95) < 500
 
     def test_evening_is_more_expensive_than_overnight(self):
-        from arb.data.providers import PriceRequest
+        from wattson.data.providers import PriceRequest
 
         req = PriceRequest(
             settlement_point="LZ_WEST",

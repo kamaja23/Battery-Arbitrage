@@ -1,7 +1,7 @@
 """Forecast-driven dispatch.
 
 At the first interval of each day the strategy forecasts that day's prices
-from earlier days only (see :mod:`arb.forecast`), optimizes a schedule against
+from earlier days only (see :mod:`wattson.forecast`), optimizes a schedule against
 the forecast starting from the battery's actual state of charge, and then
 follows that schedule through the day. Settlement uses real prices, so every
 forecast error shows up in the result.
@@ -17,9 +17,9 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
-from arb.config import CENTRAL_TIME
-from arb.forecast import DEFAULT_HISTORY_DAYS, profile_forecast
-from arb.strategies.base import Action, DecisionContext, Strategy
+from wattson.config import CENTRAL_TIME
+from wattson.forecast import DEFAULT_HISTORY_DAYS, profile_forecast
+from wattson.strategies.base import Action, DecisionContext, Strategy
 
 
 @dataclass(slots=True)
@@ -66,7 +66,7 @@ class ForecastStrategy(Strategy):
         return Action()
 
     def _plan_day(self, start: int, end: int, ctx: DecisionContext) -> None:
-        from arb.strategies.perfect_foresight import solve_perfect_foresight
+        from wattson.strategies.perfect_foresight import solve_perfect_foresight
 
         forecast = self._forecast[start:end]
         if end - start < 2 or np.isnan(forecast).any():

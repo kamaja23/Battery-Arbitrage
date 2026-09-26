@@ -1,4 +1,4 @@
-# Streamlit UI for the ERCOT battery arbitrage backtester.
+# Wattson: Streamlit UI that backtests Base home batteries on real ERCOT prices.
 #
 # Two stages so the runtime image carries no build toolchain. The PuLP CBC
 # solver is a prebuilt linux binary that needs libstdc++, which is why that
@@ -20,13 +20,13 @@ RUN pip install --upgrade pip && pip install .
 
 FROM python:3.13-slim AS runtime
 
-LABEL org.opencontainers.image.title="ERCOT battery arbitrage backtester" \
+LABEL org.opencontainers.image.title="Wattson" \
       org.opencontainers.image.description="Streamlit UI over real ERCOT settlement point prices"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/opt/venv/bin:$PATH" \
-    ARB_CACHE_DIR=/data/cache \
+    WATTSON_CACHE_DIR=/data/cache \
     STREAMLIT_SERVER_PORT=8501 \
     STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
     STREAMLIT_SERVER_HEADLESS=true \
@@ -44,11 +44,11 @@ COPY app.py ./
 
 # Run unprivileged. /data/cache is created here so a named volume mounted on
 # that path inherits these ownership bits on first use.
-RUN useradd --create-home --uid 10001 arb \
+RUN useradd --create-home --uid 10001 wattson \
  && mkdir -p /data/cache \
- && chown -R arb:arb /app /data
+ && chown -R wattson:wattson /app /data
 
-USER arb
+USER wattson
 
 EXPOSE 8501
 

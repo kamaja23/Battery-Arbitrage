@@ -3,10 +3,10 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from arb.config import COMMERCIAL_1MW, RESIDENTIAL_13KWH, EngineConfig
-from arb.data.providers import SyntheticProvider
-from arb.sim.engine import prepare_price_series, run_backtest
-from arb.strategies.threshold import ThresholdStrategy
+from wattson.config import COMMERCIAL_1MW, RESIDENTIAL_13KWH, EngineConfig
+from wattson.data.providers import SyntheticProvider
+from wattson.sim.engine import prepare_price_series, run_backtest
+from wattson.strategies.threshold import ThresholdStrategy
 
 
 @pytest.fixture
@@ -90,7 +90,7 @@ class TestRunBacktest:
             name = "idle"
 
             def decide(self, ctx):
-                from arb.strategies.base import Action
+                from wattson.strategies.base import Action
 
                 return Action()
 

@@ -14,19 +14,23 @@
 # If the app should stay server-local only, use "127.0.0.1:8502:8501" and
 # reach it with:  ssh -L 8502:127.0.0.1:8502 andrei@192.168.0.171
 
+# Fixed project name, so volumes are named wattson_* regardless of the folder
+# this checkout lives in.
+name: wattson
+
 services:
-  arb-ui:
+  wattson:
     build:
       context: .
       dockerfile: Dockerfile
-    image: battery-arbitrage-ui:local
-    container_name: arb-ui
+    image: wattson:local
+    container_name: wattson
     restart: unless-stopped
     ports:
       - "8502:8501"
     environment:
       # cache.py derives a bad default from site-packages, so set it explicitly
-      ARB_CACHE_DIR: /data/cache
+      WATTSON_CACHE_DIR: /data/cache
     volumes:
       # Read-only credentials. The file is 644 on the host, so the container's
       # unprivileged user can read it but cannot modify it.
@@ -34,11 +38,10 @@ services:
       # Named volume so cached ERCOT prices survive rebuilds. Not a bind mount
       # on purpose: the host data/ dir is uid 1000 and the container runs as
       # 10001, which would not be able to write.
-      - arb-cache:/data/cache
+      - cache:/data/cache
     # Seed the volume once after pulling or building, so the demo does not
     # depend on live API calls (the public API rate limits aggressively):
-    #   VOL=$(docker volume ls -q | grep arb-cache)
-    #   docker run --rm -v "$VOL":/dst -v "$PWD/data/cache":/src:ro \
+    #   docker run --rm -v wattson_cache:/dst -v "$PWD/data/cache":/src:ro \
     #     alpine sh -c 'cp -n /src/*.csv /dst/'
     healthcheck:
       test:
@@ -55,4 +58,4 @@ services:
       retries: 3
 
 volumes:
-  arb-cache:
+  cache:

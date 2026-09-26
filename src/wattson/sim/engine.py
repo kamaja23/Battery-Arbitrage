@@ -8,10 +8,10 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from arb.config import BatteryConfig, EngineConfig
-from arb.data.providers import validate_price_frame
-from arb.sim.battery import BatteryState
-from arb.strategies.base import DecisionContext, Strategy
+from wattson.config import BatteryConfig, EngineConfig
+from wattson.data.providers import validate_price_frame
+from wattson.sim.battery import BatteryState
+from wattson.strategies.base import DecisionContext, Strategy
 
 LEDGER_COLUMNS = (
     "interval_start",

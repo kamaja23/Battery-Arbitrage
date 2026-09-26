@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from arb.config import (
+from wattson.config import (
     USD_PER_MWH_TO_USD_PER_KWH,
     BatteryConfig,
     usd_from_mwh,

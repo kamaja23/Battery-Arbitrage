@@ -25,8 +25,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from arb.config import CENTRAL_TIME
-from arb.data.providers import (
+from wattson.config import CENTRAL_TIME
+from wattson.data.providers import (
     PriceRequest,
     PriceSeriesProvider,
     validate_price_frame,

@@ -3,14 +3,14 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from arb.config import BatteryConfig, CENTRAL_TIME, RESIDENTIAL_13KWH
-from arb.data.providers import PriceRequest, SyntheticProvider
-from arb.sim.engine import run_backtest
-from arb.strategies.perfect_foresight import (
+from wattson.config import BatteryConfig, CENTRAL_TIME, RESIDENTIAL_13KWH
+from wattson.data.providers import PriceRequest, SyntheticProvider
+from wattson.sim.engine import run_backtest
+from wattson.strategies.perfect_foresight import (
     solve_perfect_foresight,
     run_perfect_foresight_backtest,
 )
-from arb.strategies.threshold import ThresholdStrategy
+from wattson.strategies.threshold import ThresholdStrategy
 
 
 def series(prices: list[float], freq: str = "15min") -> pd.Series:

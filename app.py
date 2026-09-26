@@ -11,6 +11,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
-from arb.ui import main  # noqa: E402
+from wattson.ui import main  # noqa: E402
 
 main()

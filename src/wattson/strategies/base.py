@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from arb.config import BatteryConfig
+from wattson.config import BatteryConfig
 
 
 @dataclass(frozen=True, slots=True)

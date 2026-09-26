@@ -10,7 +10,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-from arb.sim.engine import BacktestResult
+from wattson.sim.engine import BacktestResult
 
 _PRICE_COLOR = "#1f3b57"
 _SOC_COLOR = "#0e7c86"

@@ -4,11 +4,11 @@ import pandas as pd
 import plotly.graph_objects as go
 import pytest
 
-from arb.config import RESIDENTIAL_13KWH
-from arb.data.providers import PriceRequest, SyntheticProvider
-from arb.sim.engine import run_backtest
-from arb.strategies.threshold import ThresholdStrategy
-from arb.viz import cumulative_revenue_figure, daily_revenue_figure, dispatch_figure
+from wattson.config import RESIDENTIAL_13KWH
+from wattson.data.providers import PriceRequest, SyntheticProvider
+from wattson.sim.engine import run_backtest
+from wattson.strategies.threshold import ThresholdStrategy
+from wattson.viz import cumulative_revenue_figure, daily_revenue_figure, dispatch_figure
 
 
 @pytest.fixture

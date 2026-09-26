@@ -1,7 +1,7 @@
 """Command line entry points.
 
-``arb <command>`` exposes every command. ``arb-backtest``, ``arb-fetch`` and
-``arb-verify-data`` are shortcuts for ``arb backtest`` and friends. The scripts
+``wattson <command>`` exposes every command. ``wattson-backtest``, ``wattson-fetch`` and
+``wattson-verify-data`` are shortcuts for ``wattson backtest`` and friends. The scripts
 under ``scripts/`` are thin wrappers so the same code runs from a source
 checkout.
 
@@ -16,13 +16,13 @@ import sys
 
 import pandas as pd
 
-from arb.config import PRESETS, BatteryConfig
-from arb.data.cache import cached_fetch, load
-from arb.data.ercot_source import ErcotLiveProvider, load_keys_file
-from arb.data.providers import PriceRequest
-from arb.metrics import compare_strategies, compare_zones, rank_agreement, rank_stability
-from arb.strategies.threshold import ThresholdStrategy
-from arb.zones import HUBS, LOAD_ZONES, label_for
+from wattson.config import PRESETS, BatteryConfig
+from wattson.data.cache import cached_fetch, load
+from wattson.data.ercot_source import ErcotLiveProvider, load_keys_file
+from wattson.data.providers import PriceRequest
+from wattson.metrics import compare_strategies, compare_zones, rank_agreement, rank_stability
+from wattson.strategies.threshold import ThresholdStrategy
+from wattson.zones import HUBS, LOAD_ZONES, label_for
 
 DEFAULT_KEYS = "ERCOT API Keys.txt"
 DEFAULT_BATTERY = "base_core"
@@ -263,7 +263,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="arb", description=__doc__)
+    parser = argparse.ArgumentParser(prog="wattson", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
     backtest = sub.add_parser("backtest", help="backtest the strategies on real prices")
@@ -317,17 +317,17 @@ def _shortcut(command: str) -> int:
 
 
 def backtest_main() -> int:
-    """``arb-backtest``: same as ``arb backtest``."""
+    """``wattson-backtest``: same as ``wattson backtest``."""
     return _shortcut("backtest")
 
 
 def fetch_main() -> int:
-    """``arb-fetch``: same as ``arb fetch``."""
+    """``wattson-fetch``: same as ``wattson fetch``."""
     return _shortcut("fetch")
 
 
 def verify_main() -> int:
-    """``arb-verify-data``: same as ``arb verify-data``."""
+    """``wattson-verify-data``: same as ``wattson verify-data``."""
     return _shortcut("verify-data")
 
 

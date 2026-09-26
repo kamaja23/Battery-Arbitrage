@@ -13,9 +13,9 @@ from dataclasses import asdict, dataclass
 import numpy as np
 import pandas as pd
 
-from arb.config import HOURS_PER_YEAR, BatteryConfig
-from arb.sim.engine import BacktestResult, prepare_price_series
-from arb.strategies.base import Strategy
+from wattson.config import HOURS_PER_YEAR, BatteryConfig
+from wattson.sim.engine import BacktestResult, prepare_price_series
+from wattson.strategies.base import Strategy
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,8 +214,8 @@ def compare_strategies(
     Returns a frame indexed by label with the headline economics for each, so
     the CLI and the UI report the same comparison.
     """
-    from arb.sim.engine import run_backtest
-    from arb.strategies.perfect_foresight import solve_perfect_foresight
+    from wattson.sim.engine import run_backtest
+    from wattson.strategies.perfect_foresight import solve_perfect_foresight
 
     result = run_backtest(prices, battery, strategy)
     online = compute_metrics(result)
@@ -267,7 +267,7 @@ def compare_strategies(
     )
 
     if include_forecast:
-        from arb.strategies.forecast import ForecastStrategy
+        from wattson.strategies.forecast import ForecastStrategy
 
         planned = run_backtest(prices, battery, ForecastStrategy())
         f_net = compute_metrics(planned).net_usd
@@ -319,7 +319,7 @@ def compare_zones(
     on the same battery, window, and market so the differences come from the
     price shape alone.
     """
-    from arb.sim.engine import run_backtest
+    from wattson.sim.engine import run_backtest
 
     rows: list[dict[str, object]] = []
     for zone, frame in frames.items():

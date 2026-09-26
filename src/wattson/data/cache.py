@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from arb.config import CENTRAL_TIME
-from arb.data.providers import (
+from wattson.config import CENTRAL_TIME
+from wattson.data.providers import (
     PRICE_COLUMNS,
     PriceRequest,
     PriceSeriesProvider,
@@ -23,7 +23,7 @@ from arb.data.providers import (
 )
 
 DEFAULT_CACHE_DIR = Path(
-    os.environ.get("ARB_CACHE_DIR", Path(__file__).resolve().parents[3] / "data" / "cache")
+    os.environ.get("WATTSON_CACHE_DIR", Path(__file__).resolve().parents[3] / "data" / "cache")
 )
 
 

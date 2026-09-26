@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from arb.zones import (
+from wattson.zones import (
     HUBS,
     LOAD_ZONES,
     SETTLEMENT_POINTS,

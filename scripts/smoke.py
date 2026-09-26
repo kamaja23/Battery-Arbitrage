@@ -12,12 +12,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from arb.config import COMMERCIAL_1MW, RESIDENTIAL_13KWH, EngineConfig
-from arb.data.providers import PriceRequest, SyntheticProvider
-from arb.metrics import compute_metrics
-from arb.sim.engine import run_backtest
-from arb.strategies.perfect_foresight import run_perfect_foresight_backtest
-from arb.strategies.threshold import ThresholdStrategy
+from wattson.config import COMMERCIAL_1MW, RESIDENTIAL_13KWH, EngineConfig
+from wattson.data.providers import PriceRequest, SyntheticProvider
+from wattson.metrics import compute_metrics
+from wattson.sim.engine import run_backtest
+from wattson.strategies.perfect_foresight import run_perfect_foresight_backtest
+from wattson.strategies.threshold import ThresholdStrategy
 
 INTERTRUST_USD_PER_KW_YEAR = (55.0, 66.0)
 

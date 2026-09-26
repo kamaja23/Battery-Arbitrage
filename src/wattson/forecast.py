@@ -18,7 +18,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from arb.config import CENTRAL_TIME, BatteryConfig
+from wattson.config import CENTRAL_TIME, BatteryConfig
 
 DEFAULT_HISTORY_DAYS = 7
 
@@ -167,7 +167,7 @@ def plan_next_day(
     The plan starts and ends at mid-window state of charge, and the optimizer
     is charged for battery wear so it only trades spreads worth taking.
     """
-    from arb.strategies.perfect_foresight import solve_perfect_foresight
+    from wattson.strategies.perfect_foresight import solve_perfect_foresight
 
     if len(series) < 2:
         raise ValueError("need at least one day of prices to forecast from")

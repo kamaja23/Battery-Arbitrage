@@ -20,7 +20,7 @@ from typing import Final
 import numpy as np
 import pandas as pd
 
-from arb.config import CENTRAL_TIME, LocationType, Market
+from wattson.config import CENTRAL_TIME, LocationType, Market
 
 PRICE_COLUMNS: Final[tuple[str, ...]] = (
     "interval_start",

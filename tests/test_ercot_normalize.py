@@ -3,9 +3,9 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from arb.config import CENTRAL_TIME
-from arb.data.ercot_source import ErcotLiveProvider
-from arb.data.providers import PriceRequest
+from wattson.config import CENTRAL_TIME
+from wattson.data.ercot_source import ErcotLiveProvider
+from wattson.data.providers import PriceRequest
 
 
 def ercot_long_frame(ends: pd.DatetimeIndex) -> pd.DataFrame:

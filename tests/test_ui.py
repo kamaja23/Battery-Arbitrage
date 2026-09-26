@@ -6,8 +6,8 @@ import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from arb.data.providers import PriceRequest, SyntheticProvider
-from arb.metrics import BASELINE_LABEL
+from wattson.data.providers import PriceRequest, SyntheticProvider
+from wattson.metrics import BASELINE_LABEL
 
 APP = str(Path(__file__).resolve().parents[1] / "app.py")
 
@@ -15,7 +15,7 @@ APP = str(Path(__file__).resolve().parents[1] / "app.py")
 @pytest.fixture
 def offline_ui(monkeypatch):
     """Run the app against synthetic prices so tests never touch the network."""
-    import arb.ui as ui
+    import wattson.ui as ui
 
     frame = SyntheticProvider(seed=11).fetch(
         PriceRequest(
@@ -36,7 +36,8 @@ class TestRenders:
 
     def test_it_answers_the_homeowner_question_up_front(self, offline_ui):
         offline_ui.run()
-        assert "battery pay for itself" in offline_ui.title[0].value
+        assert offline_ui.title[0].value == "Wattson"
+        assert "battery pay for itself" in offline_ui.header[0].value
 
     def test_it_shows_the_headline_economics(self, offline_ui):
         offline_ui.run()
@@ -86,7 +87,7 @@ class TestInteraction:
         assert core != dual
 
     def test_every_base_model_runs_without_error(self, offline_ui):
-        from arb.config import PRESETS
+        from wattson.config import PRESETS
 
         offline_ui.run()
         for key in PRESETS:
@@ -102,7 +103,7 @@ class TestInteraction:
 
 class TestDemoDefaults:
     def test_it_opens_on_austin_energy(self, offline_ui):
-        from arb.zones import label_for
+        from wattson.zones import label_for
 
         offline_ui.run()
         assert offline_ui.selectbox[0].value == "LZ_AEN"
@@ -122,7 +123,7 @@ class TestDemoDefaults:
 
 class TestFailureHandling:
     def test_a_data_problem_is_reported_not_raised(self, offline_ui, monkeypatch):
-        import arb.ui as ui
+        import wattson.ui as ui
 
         def boom(*args, **kwargs):
             raise ValueError("no data for that window")
@@ -139,8 +140,8 @@ class TestCachedPricesWithoutCredentials:
     def test_it_serves_cached_prices_when_credentials_are_missing(
         self, monkeypatch, tmp_path
     ):
-        import arb.data.cache as cache
-        import arb.ui as ui
+        import wattson.data.cache as cache
+        import wattson.ui as ui
 
         request = PriceRequest(
             settlement_point="LZ_WEST",
@@ -163,8 +164,8 @@ class TestCachedPricesWithoutCredentials:
     def test_it_explains_itself_when_there_is_neither_cache_nor_credentials(
         self, monkeypatch, tmp_path
     ):
-        import arb.data.cache as cache
-        import arb.ui as ui
+        import wattson.data.cache as cache
+        import wattson.ui as ui
 
         monkeypatch.setattr(cache, "DEFAULT_CACHE_DIR", tmp_path)
         monkeypatch.setattr(ui, "load", cache.load)
@@ -180,7 +181,7 @@ class TestCachedPricesWithoutCredentials:
 
 class TestLocationLabels:
     def test_the_zone_selector_offers_readable_names(self, offline_ui):
-        from arb.zones import LOAD_ZONES, label_for
+        from wattson.zones import LOAD_ZONES, label_for
 
         offline_ui.run()
         options = offline_ui.selectbox[0].options
@@ -214,7 +215,7 @@ class TestDefaultWindow:
     def test_it_opens_on_the_latest_cached_window(self, monkeypatch):
         import datetime as dt
 
-        import arb.ui as ui
+        import wattson.ui as ui
 
         monkeypatch.setattr(
             ui,
@@ -228,7 +229,7 @@ class TestDefaultWindow:
         assert ui._default_window() == (dt.date(2026, 8, 26), dt.date(2026, 9, 24))
 
     def test_with_nothing_cached_it_falls_back_to_the_last_30_days(self, monkeypatch):
-        import arb.ui as ui
+        import wattson.ui as ui
 
         monkeypatch.setattr(ui, "cached_windows", lambda point, market: [])
         start, end = ui._default_window()

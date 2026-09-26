@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-import arb.cli as cli
-import arb.data.cache as cache
-from arb.config import PRESETS
-from arb.data.providers import PriceRequest, SyntheticProvider
+import wattson.cli as cli
+import wattson.data.cache as cache
+from wattson.config import PRESETS
+from wattson.data.providers import PriceRequest, SyntheticProvider
 
 MISSING_KEYS = "/nonexistent/ERCOT API Keys.txt"
 
@@ -120,8 +120,8 @@ class TestShortcuts:
         )
         scripts = project["project"]["scripts"]
         assert scripts == {
-            "arb": "arb.cli:main",
-            "arb-backtest": "arb.cli:backtest_main",
-            "arb-verify-data": "arb.cli:verify_main",
-            "arb-fetch": "arb.cli:fetch_main",
+            "wattson": "wattson.cli:main",
+            "wattson-backtest": "wattson.cli:backtest_main",
+            "wattson-verify-data": "wattson.cli:verify_main",
+            "wattson-fetch": "wattson.cli:fetch_main",
         }

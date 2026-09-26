@@ -4,13 +4,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from arb.config import BASE_CORE, CENTRAL_TIME
-from arb.data.providers import PriceRequest, SyntheticProvider
-from arb.forecast import forecast_accuracy, plan_next_day, profile_forecast
-from arb.metrics import compute_metrics
-from arb.sim.engine import prepare_price_series, run_backtest
-from arb.strategies.forecast import ForecastStrategy
-from arb.strategies.perfect_foresight import solve_perfect_foresight
+from wattson.config import BASE_CORE, CENTRAL_TIME
+from wattson.data.providers import PriceRequest, SyntheticProvider
+from wattson.forecast import forecast_accuracy, plan_next_day, profile_forecast
+from wattson.metrics import compute_metrics
+from wattson.sim.engine import prepare_price_series, run_backtest
+from wattson.strategies.forecast import ForecastStrategy
+from wattson.strategies.perfect_foresight import solve_perfect_foresight
 
 
 def _repeating(days: int = 10, start: str = "2026-06-01") -> pd.Series:

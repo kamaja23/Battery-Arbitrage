@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from arb.config import BatteryConfig
-from arb.sim.battery import BatteryState, StepResult
+from wattson.config import BatteryConfig
+from wattson.sim.battery import BatteryState, StepResult
 
 
 @pytest.fixture

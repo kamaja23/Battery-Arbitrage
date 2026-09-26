@@ -1,6 +1,6 @@
-# ERCOT Battery Arbitrage
+# Wattson
 
-Would a Base battery pay for itself in your ERCOT zone? This tool backtests
+Would a Base battery pay for itself in your ERCOT zone? Wattson backtests
 Base Power's home batteries against real ERCOT settlement prices, compares
 dispatch strategies against a no-battery baseline and a perfect-foresight
 ceiling, ranks every Texas load zone, and plans the next day from a price
@@ -15,8 +15,7 @@ has actually been.
 ```bash
 docker compose up -d --build
 # seed the cache volume once so the demo works without the ERCOT API
-VOL=$(docker volume ls -q | grep arb-cache)
-docker run --rm -v "$VOL":/dst -v "$PWD/data/cache":/src:ro alpine sh -c 'cp -n /src/*.csv /dst/'
+docker run --rm -v wattson_cache:/dst -v "$PWD/data/cache":/src:ro alpine sh -c 'cp -n /src/*.csv /dst/'
 ```
 
 Open <http://localhost:8502>. The container needs `ERCOT API Keys.txt` in the
@@ -57,17 +56,17 @@ Each command reads the cache first and needs credentials only on a cache
 miss.
 
 ```bash
-arb backtest                          # Austin Energy, demo window, every Base model
-arb backtest --zone LZ_WEST --start 2026-07-01 --end 2026-07-31 --battery base_core
-arb compare-zones --hubs              # rank every zone for one battery
-arb stability                         # do zone rankings hold month to month?
-arb fetch --zone LZ_CPS --start 2026-09-01 --end 2026-09-24
-arb verify-data                       # check row counts and DST handling
+wattson backtest                          # Austin Energy, demo window, every Base model
+wattson backtest --zone LZ_WEST --start 2026-07-01 --end 2026-07-31 --battery base_core
+wattson compare-zones --hubs              # rank every zone for one battery
+wattson stability                         # do zone rankings hold month to month?
+wattson fetch --zone LZ_CPS --start 2026-09-01 --end 2026-09-24
+wattson verify-data                       # check row counts and DST handling
 ```
 
-`arb-backtest`, `arb-fetch` and `arb-verify-data` are shortcuts for the
-matching `arb` subcommand. From a source checkout, use
-`PYTHONPATH=src python -m arb.cli <command>`.
+`wattson-backtest`, `wattson-fetch` and `wattson-verify-data` are shortcuts for the
+matching `wattson` subcommand. From a source checkout, use
+`PYTHONPATH=src python -m wattson.cli <command>`.
 
 ## Real-time vs day-ahead prices
 
@@ -113,7 +112,7 @@ The app lets you backtest against either.
 Base does not publish round-trip efficiency, usable charge window or cycle
 life. The model assumes 90% round-trip efficiency, a 10–95% charge window, and
 $0.012 per kWh of throughput for wear, all typical for LFP batteries. These
-live in `src/arb/config.py`.
+live in `src/wattson/config.py`.
 
 ## What the data says (real-time prices, April–September 2026, Base Core)
 
@@ -131,18 +130,18 @@ live in `src/arb/config.py`.
   more in the volatile months and lost less in the calm ones, by skipping
   trades whose forecast spread would not cover wear.
 
-Reproduce with `arb stability` and `arb backtest`.
+Reproduce with `wattson stability` and `wattson backtest`.
 
 ## Layout
 
 ```
-src/arb/config.py       battery specs and presets
-src/arb/zones.py        load zone / hub names and geography
-src/arb/data/           ERCOT client, normalization, on-disk cache
-src/arb/sim/            battery physics and backtest engine
-src/arb/strategies/     threshold, forecast, perfect foresight
-src/arb/forecast.py     price forecast, accuracy scoring, next-day plan
-src/arb/metrics.py      economics, strategy and zone comparisons, rank stability
-src/arb/ui.py           Streamlit app
-src/arb/cli.py          command line
+src/wattson/config.py       battery specs and presets
+src/wattson/zones.py        load zone / hub names and geography
+src/wattson/data/           ERCOT client, normalization, on-disk cache
+src/wattson/sim/            battery physics and backtest engine
+src/wattson/strategies/     threshold, forecast, perfect foresight
+src/wattson/forecast.py     price forecast, accuracy scoring, next-day plan
+src/wattson/metrics.py      economics, strategy and zone comparisons, rank stability
+src/wattson/ui.py           Streamlit app
+src/wattson/cli.py          command line
 ```
