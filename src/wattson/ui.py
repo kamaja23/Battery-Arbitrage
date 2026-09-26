@@ -1,37 +1,40 @@
 """Wattson's Streamlit front end.
 
-Answers the homeowner question the product is built around: "if I put a
-battery in my ERCOT zone, what does it earn?"
+Written for someone who has never heard of ERCOT: plain words, prices in cents
+per kWh (the unit on a home bill), earnings in dollars for the chosen battery,
+and one idea per chart. Industry units and raw tables live in expanders.
 
-The app is deliberately honest about one thing. Every number here is
-annualized from a *historical* price window, because this tool has no price
-forecast. It is labelled as an annualization, not a projection, so nobody
-reads it as a promise about future earnings.
+Every figure replays historical prices and says so. Nothing here is a promise
+about future earnings.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import replace
 
 import pandas as pd
 import streamlit as st
 
-from wattson.config import PRESETS, BatteryConfig
-from wattson.data.cache import cached_fetch, cached_windows, load
+from wattson.config import CENTRAL_TIME, PRESETS, BatteryConfig
+from wattson.data.cache import load_range
 from wattson.data.ercot_source import ErcotLiveProvider, load_keys_file
 from wattson.data.providers import PriceRequest
-from wattson.metrics import compare_strategies, compare_zones, compute_metrics
+from wattson.metrics import BASELINE_LABEL, compare_strategies, compare_zones, compute_metrics
 from wattson.forecast import forecast_accuracy, plan_next_day
+from wattson.parallel import PARALLEL_MIN_INTERVALS, backtest_job, default_workers, optimal_job, pool
 from wattson.sim.engine import prepare_price_series, run_backtest
+from wattson.strategies.forecast import ForecastStrategy
 from wattson.strategies.threshold import ThresholdStrategy
 from wattson.viz import (
-    cumulative_revenue_figure,
-    daily_revenue_figure,
+    daily_earnings_figure,
+    day_in_the_life_figure,
     dispatch_figure,
     forecast_plan_figure,
+    strategy_figure,
     zone_comparison_figure,
 )
-from wattson.zones import HUBS, LOAD_ZONES, label_for
+from wattson.zones import HUBS, LOAD_ZONES, label_for, short_name
 
 
 # Intertrust's published range for optimized pure RTM arbitrage, used only as
@@ -64,24 +67,32 @@ MARKET_EXPLAINERS = {
 def _market_name(market: str) -> str:
     """'Real-time (RTM)': the plain name first, the ERCOT code in brackets."""
     return f"{MARKET_NAMES.get(market, market)} ({market})"
-MIN_DEFAULT_DAYS = 7
+# Date presets. Every preset runs up to today (Texas time).
+RANGE_PRESETS: dict[str, tuple[str, int] | None] = {
+    "Last 7 days": ("days", 7),
+    "Last month": ("months", 1),
+    "Last 2 months": ("months", 2),
+    "Last 3 months": ("months", 3),
+    "Last 6 months": ("months", 6),
+    "Last year": ("months", 12),
+    "Custom dates": None,
+}
+DEFAULT_RANGE = "Last month"
+FULL_DETAIL_MAX_DAYS = 62
 
 
-def _default_window() -> tuple:
-    """Open on the latest window already cached for the default zone.
+def _today() -> dt.date:
+    """Today in Texas. The server may run on UTC, which is ahead in the evening."""
+    return pd.Timestamp.now(tz=CENTRAL_TIME).date()
 
-    A cached default means the first screen of a demo renders without the
-    network. With nothing cached, fall back to the last 30 days.
-    """
-    yesterday = (pd.Timestamp("today").normalize() - pd.Timedelta(days=1)).date()
-    windows = [
-        (start, end)
-        for start, end in cached_windows(DEFAULT_ZONE, "RTM")
-        if (end - start).days + 1 >= MIN_DEFAULT_DAYS and end <= yesterday
-    ]
-    if windows:
-        return windows[-1]
-    return (yesterday - pd.Timedelta(days=29).to_pytimedelta(), yesterday)
+
+def _preset_window(choice: str, today: dt.date) -> tuple[dt.date, dt.date]:
+    """Start and end dates for a preset, ending today."""
+    kind, n = RANGE_PRESETS[choice]
+    if kind == "days":
+        return today - dt.timedelta(days=n - 1), today
+    start = (pd.Timestamp(today) - pd.DateOffset(months=n) + pd.Timedelta(days=1)).date()
+    return start, today
 
 
 def _load_credentials() -> bool:
@@ -92,23 +103,135 @@ def _load_credentials() -> bool:
         return False
 
 
-@st.cache_data(show_spinner=False, ttl=3600)
+@st.cache_data(show_spinner=False, ttl=600)
 def _prices_cached(
     zone: str, start: str, end: str, market: str, ready: bool
 ) -> pd.DataFrame:
-    request = PriceRequest(
-        settlement_point=zone, start_date=start, end_date=end, market=market
+    """Prices for a date range: saved months from disk, today live.
+
+    Cached for 10 minutes so today's prices stay reasonably current. What
+    could not be loaded rides along in ``frame.attrs`` for the page to explain.
+    """
+    fetch = (lambda request: ErcotLiveProvider().fetch(request)) if ready else None
+    result = load_range(
+        zone,
+        market,
+        dt.date.fromisoformat(start),
+        dt.date.fromisoformat(end),
+        today=_today(),
+        fetch=fetch,
     )
-    hit = load(request)
-    if hit is not None:
-        return hit
-    if not ready:
+    if result.frame.empty:
         raise RuntimeError(
             f"no cached {_market_name(market)} prices for {label_for(zone)} "
             f"covering {start}..{end}, "
-            "and no API credentials to fetch them"
+            + ("and no API credentials to fetch them" if not ready else "and ERCOT returned none")
         )
-    return cached_fetch(ErcotLiveProvider(), request)
+    frame = result.frame.copy()
+    frame.attrs.update(
+        missing_days=list(result.missing_days),
+        includes_today=result.includes_today,
+        today_error=result.today_error,
+    )
+    return frame
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def _run_cached(zone: str, start: str, end: str, market: str, battery, ready: bool):
+    """Everything the single-area page computes, cached so moving the day
+    slider does not rerun a year of backtests."""
+    prices = _prices_cached(zone, start, end, market, ready)
+    point = str(prices["settlement_point"].iloc[0])
+    online = optimal = None
+    if len(prices) >= PARALLEL_MIN_INTERVALS:
+        # Long windows: run the planner, the simple rule and perfect hindsight
+        # at the same time instead of one after another.
+        with pool(3) as ex:
+            planned = ex.submit(backtest_job, (prices, battery, ForecastStrategy()))
+            rule = ex.submit(backtest_job, (prices, battery, ThresholdStrategy()))
+            best = ex.submit(optimal_job, (prices, battery, market, point))
+            result, online, optimal = planned.result(), rule.result(), best.result()
+    else:
+        result = run_backtest(prices, battery, ForecastStrategy())
+    metrics = compute_metrics(result)
+    comparison = compare_strategies(
+        prices, battery, ThresholdStrategy(),
+        online_result=online, forecast_result=result, optimal_solution=optimal,
+    )
+    series = prepare_price_series(prices, result.market, result.settlement_point)
+    try:
+        plan, plan_error = plan_next_day(series, battery), None
+    except (ValueError, RuntimeError) as exc:
+        plan, plan_error = None, str(exc)
+    accuracy = forecast_accuracy(series)
+    return prices, result, metrics, comparison, plan, plan_error, accuracy
+
+
+@st.cache_data(show_spinner=False, ttl=600)
+def _compare_cached(targets: tuple[str, ...], start: str, end: str, market: str, battery, ready: bool):
+    frames: dict[str, pd.DataFrame] = {}
+    skipped: list[str] = []
+    for code in targets:
+        try:
+            frames[code] = _prices_cached(code, start, end, market, ready)
+        except Exception:  # noqa: BLE001 - a missing area must not break the rest
+            skipped.append(code)
+    comparison = (
+        compare_zones(frames, battery, ForecastStrategy(), workers=default_workers())
+        if frames
+        else None
+    )
+    span_frame = next(iter(frames.values())) if frames else None
+    return comparison, skipped, span_frame
+
+
+def _date_ranges(days) -> str:
+    """Collapse dates into readable runs: 'Sep 21–25, Sep 28'."""
+    days = sorted(days)
+    runs, run = [], [days[0]] if days else []
+    for d in days[1:]:
+        if (d - run[-1]).days == 1:
+            run.append(d)
+        else:
+            runs.append(run)
+            run = [d]
+    if run:
+        runs.append(run)
+    def fmt(r):
+        if len(r) == 1:
+            return f"{r[0]:%b %-d}"
+        tail = f"{r[-1]:%-d}" if r[-1].month == r[0].month else f"{r[-1]:%b %-d}"
+        return f"{r[0]:%b %-d}–{tail}"
+
+    return ", ".join(fmt(r) for r in runs)
+
+
+def _data_notes(prices: pd.DataFrame, end: dt.date, today: dt.date) -> None:
+    """Say plainly when part of the requested period could not be loaded."""
+    missing = prices.attrs.get("missing_days") or []
+    if missing:
+        st.warning(
+            f"No prices for {len(missing)} day{'s' if len(missing) != 1 else ''} in "
+            f"this period ({_date_ranges(missing)}). You may be offline, or ERCOT "
+            "hasn't published them. The numbers cover the days that loaded."
+        )
+    if end >= today and not prices.attrs.get("includes_today", False):
+        last = prices["interval_start"].iloc[-1]
+        if prices.attrs.get("today_error") == "offline":
+            reason = "Today's prices need an internet connection"
+        else:
+            reason = "Today's prices couldn't be loaded"
+        st.caption(f"{reason}, so this runs through {last:%b %-d}.")
+
+
+def _md(text: str) -> str:
+    """Escape dollar signs for Streamlit markdown.
+
+    Streamlit reads text between two ``$`` as a LaTeX formula, which silently
+    eats both dollar signs and mangles everything between them. Anything
+    rendered as markdown (success, error, caption, info) goes through here.
+    """
+    return text.replace("$", r"\$")
 
 
 def _money(value: float, decimals: int = 0) -> str:
@@ -117,229 +240,466 @@ def _money(value: float, decimals: int = 0) -> str:
     return f"{sign}${abs(value):,.{decimals}f}"
 
 
-def _metrics_row(metrics, title: str, has_cost: bool = True) -> None:
-    cols = st.columns(4)
-    cols[0].metric("Net earned", _money(metrics.net_usd))
-    cols[1].metric("After degradation", _money(metrics.net_after_degradation_usd))
-    cols[2].metric("Per kW / year", _money(metrics.usd_per_kw_year, 2))
-    payback = metrics.payback_years
-    if not has_cost:
-        cols[3].metric(
-            "Payback", "n/a",
-            help="Base owns the battery and pricing varies by address, so no "
-                 "purchase price is assumed. Use 'Customize size' to enter one.",
-        )
-    else:
-        cols[3].metric(
-            "Payback",
-            "never" if payback is None else f"{payback:,.0f} yr",
-        )
-    st.caption(title)
+def _cents(usd_per_mwh: float) -> str:
+    """$/MWh as cents per kWh, the unit people see on their electricity bill."""
+    return f"{usd_per_mwh / 10:.1f}¢"
+
+
+def _hour(ts) -> str:
+    return f"{ts:%-I %p}"
+
+
+STRATEGY_NAMES = {
+    BASELINE_LABEL: "No battery",
+    "threshold": "Simple rule",
+    "forecast": "Forecast planner (what Wattson uses)",
+    "perfect foresight (upper bound)": "Perfect hindsight (impossible in practice)",
+}
+
+ZONE_HELP = (
+    "The Texas grid is split into pricing areas. Yours depends on which "
+    "company delivers your electricity, not just your address. For example, "
+    "Austin Energy customers are in the Austin Energy area, but many homes "
+    "around Austin are priced as South Texas."
+)
+
+GLOSSARY = {
+    "ERCOT": "The organization that runs most of the Texas power grid and "
+             "publishes the wholesale price of electricity.",
+    "Pricing area (load zone)": "ERCOT sets a separate price for each part of "
+             "Texas. Which one applies to a home depends on its electric "
+             "utility.",
+    "Real-time and day-ahead prices": "Real-time prices are what power "
+             "actually sold for, every 15 minutes. Day-ahead prices are "
+             "agreed the day before, hour by hour.",
+    "kWh and kW": "A kWh (kilowatt-hour) is an amount of energy: how much the "
+             "battery holds. A kW (kilowatt) is a rate: how fast it can charge "
+             "or discharge. A Base Core holds 39.2 kWh and moves up to 11 kW.",
+    "Cents per kWh": "The unit on a home electricity bill. Wholesale prices "
+             "are usually a few cents, but can jump to dollars during a spike.",
+    "Battery wear": "Every charge and discharge wears a battery slightly. "
+             "Wattson counts that as a cost, so a trade only makes sense when "
+             "the price gap is bigger than the wear.",
+    "Trading hub": "A regional average price that energy traders use. Homes "
+             "are not billed at hub prices.",
+}
+
+
+def _how_it_works() -> None:
+    cols = st.columns(3)
+    cols[0].markdown(
+        "**1. Power prices change all day.** In Texas, the wholesale price of "
+        "electricity resets every 15 minutes. It's usually cheap overnight and "
+        "can spike on hot afternoons."
+    )
+    cols[1].markdown(
+        "**2. A battery can buy low and sell high.** It charges when power is "
+        "cheap and sends it back to the grid when power is expensive. The "
+        "difference is what it earns."
+    )
+    cols[2].markdown(
+        "**3. Wattson replays real prices.** It runs a Base battery through "
+        "real past prices from the Texas grid to show what it would have earned."
+    )
+    st.divider()
 
 
 def main() -> None:
     st.set_page_config(page_title="Wattson", layout="wide")
     st.title("Wattson")
-    st.header("Would a Base battery pay for itself in your ERCOT zone?")
+    st.header("What could a Base battery earn in your part of Texas?")
+    _how_it_works()
 
     credentials_ready = _load_credentials()
 
     with st.sidebar:
-        st.header("Your setup")
-        view = st.radio("View", ["Your zone", "Compare zones"], horizontal=True)
+        st.header("Choose what to look at")
+        view = st.radio("Show", ["One area", "Compare all of Texas"], horizontal=True)
         zone = st.selectbox(
-            "Load zone",
+            "Where in Texas?",
             LOAD_ZONES,
             index=LOAD_ZONES.index(DEFAULT_ZONE),
             format_func=label_for,
-            help="A load zone follows your utility's service territory, not your "
-                 "address. Most of Austin is priced in LZ_SOUTH; only Austin "
-                 "Energy's own customers are in LZ_AEN.",
+            help=ZONE_HELP,
         )
-        market = st.radio(
-            "Which prices?",
-            ["RTM", "DAM"],
-            horizontal=True,
-            format_func=_market_name,
-            help="ERCOT, the Texas grid operator, sells electricity in two "
-                 "markets. Real-time (RTM): " + MARKET_EXPLAINERS["RTM"]
-                 + " Day-ahead (DAM): " + MARKET_EXPLAINERS["DAM"],
-        )
-        st.caption(MARKET_EXPLAINERS[market])
-
         preset_key = st.selectbox(
-            "Battery",
+            "Base battery",
             list(PRESET_LABELS),
             format_func=lambda k: PRESET_LABELS[k],
         )
         preset = PRESETS[preset_key]
 
-        custom = st.checkbox("Customize size", value=False)
-        if custom:
-            capacity = st.slider("Capacity (kWh)", 5.0, 4000.0, preset.capacity_kwh, 5.0)
-            power = st.slider("Power (kW)", 1.0, 2000.0, preset.power_kw, 5.0)
-            efficiency = st.slider("Round-trip efficiency", 0.80, 0.98, preset.round_trip_efficiency, 0.01)
-            installed = st.number_input(
-                "Installed cost ($)", 0.0, 2_000_000.0, float(preset.installed_cost_usd or 0.0), 500.0
-            )
-            battery = replace(
-                preset,
-                name=f"custom_{capacity:g}kwh",
-                capacity_kwh=capacity,
-                power_kw=power,
-                round_trip_efficiency=efficiency,
-                installed_cost_usd=installed,
+        today = _today()
+        range_choice = st.selectbox(
+            "Dates to replay",
+            list(RANGE_PRESETS),
+            index=list(RANGE_PRESETS).index(DEFAULT_RANGE),
+            help="Wattson replays real Texas grid prices from these dates. "
+                 "Presets run up to today; today's prices fill in as the day goes on.",
+        )
+        if RANGE_PRESETS[range_choice] is None:
+            window = st.date_input(
+                "From and to",
+                value=(today - dt.timedelta(days=29), today),
+                max_value=today,
             )
         else:
-            battery = preset
+            window = _preset_window(range_choice, today)
+            st.caption(f"{window[0]:%b %-d, %Y} to today ({window[1]:%b %-d})")
+            if RANGE_PRESETS[range_choice][1] >= 6 and RANGE_PRESETS[range_choice][0] == "months":
+                st.caption("Long periods take a little longer to load the first time.")
 
-        default_start, default_end = _default_window()
-        latest = (pd.Timestamp("today").normalize() - pd.Timedelta(days=1)).date()
-        window = st.date_input(
-            "Historical window",
-            value=(default_start, default_end),
-            max_value=latest,
-        )
-        st.caption(
-            "Uses real cached ERCOT prices. The API is only called for days "
-            "that aren't cached yet."
-        )
+        with st.expander("More options"):
+            market = st.radio(
+                "Which prices?",
+                ["RTM", "DAM"],
+                horizontal=True,
+                format_func=_market_name,
+                help="ERCOT, the Texas grid operator, sells electricity in two "
+                     "markets. Real-time (RTM): " + MARKET_EXPLAINERS["RTM"]
+                     + " Day-ahead (DAM): " + MARKET_EXPLAINERS["DAM"],
+            )
+            st.caption(MARKET_EXPLAINERS[market])
+            custom = st.checkbox("Try a custom battery size", value=False)
+            if custom:
+                capacity = st.slider("How much it holds (kWh)", 5.0, 200.0, float(preset.capacity_kwh), 0.1)
+                power = st.slider("How fast it charges (kW)", 1.0, 50.0, float(preset.power_kw), 0.5)
+                efficiency = st.slider(
+                    "Energy kept after a charge and discharge", 0.80, 0.98,
+                    float(preset.round_trip_efficiency), 0.01,
+                )
+                installed = st.number_input(
+                    "Purchase price in dollars (optional, for payback)",
+                    0.0, 200_000.0, float(preset.installed_cost_usd or 0.0), 500.0,
+                )
+                battery = replace(
+                    preset,
+                    name=f"custom_{capacity:g}kwh",
+                    capacity_kwh=capacity,
+                    power_kw=power,
+                    round_trip_efficiency=efficiency,
+                    installed_cost_usd=installed or None,
+                )
+            else:
+                battery = preset
         if not credentials_ready:
             st.warning(
-                "No ERCOT credentials found, so only cached data will load. "
-                "Add 'ERCOT API Keys.txt' to pull new dates."
+                "Offline: showing saved prices only. Add ERCOT API credentials "
+                "to load new dates."
             )
 
+    battery_name = "custom battery" if custom else PRESET_LABELS[preset_key].split(" · ")[0]
+
     if len(window) != 2:
-        st.info("Pick a start and end date to run the backtest.")
+        st.info("Pick a start and an end date to replay.")
         return
     start, end = window[0].isoformat(), window[1].isoformat()
+    end_date = window[1]
 
-    if view == "Compare zones":
-        _zone_comparison(start, end, market, battery, credentials_ready)
+    if view == "Compare all of Texas":
+        _zone_comparison(start, end, market, battery, battery_name, credentials_ready)
         return
 
     try:
-        with st.spinner("Loading prices..."):
-            prices = _prices_cached(zone, start, end, market, credentials_ready)
+        with st.spinner("Loading prices and running the battery..."):
+            prices, result, metrics, comparison, plan, plan_error, accuracy = _run_cached(
+                zone, start, end, market, battery, credentials_ready
+            )
     except Exception as exc:  # noqa: BLE001 - surface any data problem in the UI
-        st.error(f"Could not load prices for {label_for(zone)} {start}..{end}: {exc}")
+        st.error(_md(f"Couldn't load prices for {label_for(zone)} from {start} to {end}: {exc}"))
         return
 
-    result = run_backtest(prices, battery, ThresholdStrategy())
-    metrics = compute_metrics(result)
-    comparison = compare_strategies(prices, battery, ThresholdStrategy())
+    _headline(prices, metrics, battery, battery_name, zone, market)
+    _data_notes(prices, end_date, _today())
+    _day_in_the_life(result)
+    _day_by_day(result)
+    _strategy_section(comparison)
+    _forecast_section(plan, plan_error, accuracy, battery)
+    _limits()
+    _details(prices, result, metrics, comparison, zone, market)
+    _glossary()
 
-    span = (
-        f"{prices['interval_start'].iloc[0].date()} to "
-        f"{prices['interval_end'].iloc[-1].date()}"
+
+def _span(prices: pd.DataFrame) -> str:
+    # The last interval ends at midnight after the final day, so date the
+    # window by interval starts to avoid showing one day too many.
+    first_day = prices["interval_start"].iloc[0]
+    last_day = prices["interval_start"].iloc[-1]
+    head = f"{first_day:%b %-d}" if first_day.year == last_day.year else f"{first_day:%b %-d, %Y}"
+    return f"{head} – {last_day:%b %-d, %Y}"
+
+
+def _headline(prices, metrics, battery, battery_name: str, zone: str, market: str) -> None:
+    span = _span(prices)
+    first = prices["interval_start"].iloc[0]
+    last = prices["interval_start"].iloc[-1]
+    days = (last.date() - first.date()).days + 1
+    made = metrics.net_usd
+    kept = metrics.net_after_degradation_usd
+    wear = made - kept
+    per_year = kept / metrics.duration_days * 365 if metrics.duration_days else 0.0
+    where = f"in the {short_name(zone)} area"
+
+    if kept > 0:
+        st.success(_md(
+            f"**Over these {days} days ({span}), a {battery_name} {where} would "
+            f"have kept {_money(kept, 2)}**"
+            + ("." if days >= 360 else f", about {_money(per_year)} a year at this pace.")
+            + f" It made {_money(made, 2)} by buying power when it was "
+            f"cheap and selling it back when it was expensive, and battery wear "
+            f"cost {_money(wear, 2)}."
+        ))
+    else:
+        st.error(_md(
+            f"**Over these {days} days ({span}), a {battery_name} {where} would "
+            f"not have made money.** It made {_money(made, 2)} buying low and "
+            f"selling high, but battery wear cost {_money(wear, 2)}, leaving "
+            f"{_money(kept, 2)}. Prices didn't swing enough to cover the wear."
+        ))
+
+    has_cost = bool(battery.installed_cost_usd)
+    cols = st.columns(5 if has_cost else 4)
+    cols[0].metric(
+        "Made buying low, selling high", _money(made, 2),
+        help="What the battery got for the power it sold, minus what it paid "
+             "to charge, over these dates.",
     )
+    cols[1].metric(
+        "Battery wear", _money(-wear, 2),
+        help=f"Every charge and discharge wears the battery a little. Wattson "
+             f"counts {battery.degradation_cost_per_kwh * 100:.1f}¢ for every "
+             f"kWh that goes in or out.",
+    )
+    cols[2].metric("Kept", _money(kept, 2), help="What's left after battery wear.")
+    cols[3].metric(
+        "Per year at this pace", _money(per_year),
+        help="What it kept, scaled up to a full year. Prices change a lot from "
+             "month to month, so treat this as a rough guide, not a promise.",
+    )
+    if has_cost:
+        years = battery.installed_cost_usd / per_year if per_year > 0 else None
+        cols[4].metric(
+            "Pays for itself in",
+            f"{years:,.0f} years" if years else "Not at this pace",
+            help="Purchase price divided by what it keeps per year.",
+        )
+
     p = prices["price_usd_per_mwh"]
-    st.caption(
-        f"{label_for(zone)} · {_market_name(market)} prices · "
-        f"{len(prices):,} intervals · {span} · "
-        f"price ${p.min():,.2f} to ${p.max():,.2f}/MWh · "
-        f"{(p < 0).sum():,} negative-price intervals"
+    latest = (
+        f" Today's prices are included up to {last:%-I:%M %p}."
+        if prices.attrs.get("includes_today")
+        else ""
     )
+    st.caption(_md(
+        f"{label_for(zone)} · {_market_name(market)} prices from {span} ranged "
+        f"from {_cents(p.min())} to {_cents(p.max())} per kWh.{latest}"
+    ))
 
-    if metrics.net_usd <= 0 or metrics.net_after_degradation_usd <= 0:
-        st.error(
-            "**This battery did not make money in this window.** "
-            "Pure energy arbitrage is a narrow game: the spread has to clear "
-            "round-trip losses, degradation, and the cost of the hardware."
+
+def _day_in_the_life(result) -> None:
+    st.subheader("A day in the life")
+    st.markdown("Pick a day to see when the battery bought power and when it sold it.")
+    ledger = result.ledger
+    dates = ledger["interval_start"].dt.date
+    daily = ledger.groupby(dates)["net_usd"].sum()
+    options = list(daily.index)
+    best = daily.idxmax()
+    day = (
+        st.select_slider(
+            "Day", options=options, value=best, format_func=lambda d: f"{d:%a %b %-d}"
+        )
+        if len(options) > 1
+        else options[0]
+    )
+    one = ledger[dates == day]
+    st.plotly_chart(day_in_the_life_figure(one, result.battery), width="stretch")
+
+    bought = one["charged_kwh"].sum()
+    sold = one["discharged_kwh"].sum()
+    made = one["net_usd"].sum()
+    label = f"{day:%A, %B %-d}" + (" (the best day in this period)" if day == best else "")
+    if bought > 0 and sold > 0:
+        buy_price = (one["price_usd_per_mwh"] * one["charged_kwh"]).sum() / bought
+        sell_price = (one["price_usd_per_mwh"] * one["discharged_kwh"]).sum() / sold
+        text = (
+            f"On {label}, it bought power at an average of {_cents(buy_price)} per "
+            f"kWh and sold it at {_cents(sell_price)}, making {_money(made, 2)} "
+            "before battery wear."
+        )
+    elif day == options[0] and bought == 0 and sold == 0:
+        text = (
+            f"On {label}, the planner had no past prices to learn from yet, so "
+            "the battery waited. Pick a later day."
+        )
+    elif bought == 0 and sold == 0:
+        text = (
+            f"On {label}, prices didn't swing enough to be worth the battery "
+            "wear, so the battery sat still."
         )
     else:
-        st.success(
-            f"**{_money(metrics.net_usd)} earned** over this window, "
-            f"{_money(metrics.net_usd / metrics.duration_days)}/day."
-        )
+        action = "only charged, saving the energy for a later day" if bought else "only sold energy it had stored earlier"
+        text = f"On {label}, the battery {action}."
+    st.caption(_md(text))
 
-    _metrics_row(
-        metrics,
-        f"Annualized from this window only. Battery: {battery.name}, "
-        f"{battery.capacity_kwh:,.1f} kWh / {battery.power_kw:,.0f} kW.",
-        has_cost=bool(battery.installed_cost_usd),
+
+def _day_by_day(result) -> None:
+    st.subheader("What it made each day")
+    st.plotly_chart(daily_earnings_figure(result), width="stretch")
+    daily = result.ledger.set_index("interval_start")["net_usd"].resample("D").sum()
+    total = daily.sum()
+    text = "Green days made money, red days lost a little. Figures are before battery wear."
+    if total > 0 and len(daily) >= 5:
+        n = len(daily)
+        share = daily.nlargest(3).sum() / total
+        even = 3 / n  # what the best 3 days would make if every day earned the same
+        if share >= 0.5:
+            text += (
+                f" The best 3 of {n} days made {share:.0%} of the total: most of the "
+                "money comes from a few days when prices spiked."
+            )
+        elif share >= 2 * even:
+            text += (
+                f" The best 3 of {n} days made {share:.0%} of the total, far more than "
+                f"their {even:.0%} share if every day earned the same: a few price "
+                "spikes do a lot of the work."
+            )
+        else:
+            text += f" The best 3 of {n} days made {share:.0%} of the total, so earnings were fairly even."
+    st.caption(_md(text))
+
+
+def _strategy_section(comparison: pd.DataFrame) -> None:
+    st.subheader("How smart does the battery need to be?")
+    st.markdown("The same battery over the same dates, run four ways. Bars show what each would have kept after battery wear.")
+    kept = comparison["net_after_degradation_usd"]
+    rows = [(STRATEGY_NAMES[label], float(kept[label])) for label in comparison.index if label in STRATEGY_NAMES]
+    st.plotly_chart(strategy_figure(rows), width="stretch")
+    st.markdown(_md(
+        "- **No battery**: nothing to buy or sell, so $0.\n"
+        "- **Simple rule**: buy when power is cheaper than it has been over the "
+        "past day, sell when it's pricier.\n"
+        "- **Forecast planner**: each morning, predict the day's prices from the "
+        "past week and plan the best times to buy and sell. The rest of this "
+        "page uses this one.\n"
+        "- **Perfect hindsight**: the most possible if you knew every price in "
+        "advance. No one can, so it's a yardstick, not a target."
+    ))
+
+
+def _forecast_section(plan, plan_error, accuracy, battery) -> None:
+    """Forward look: the day after this window, planned against a forecast."""
+    st.subheader("What tomorrow might look like")
+    if plan is None:
+        st.info(_md(f"Not enough past prices here to make a forecast ({plan_error})."))
+        return
+
+    frame = plan.to_frame()
+    hourly = frame.groupby(pd.DatetimeIndex(frame["interval_start"]).hour)["forecast_usd_per_mwh"].mean()
+    cheap, peak = _hour(pd.Timestamp(2000, 1, 1, int(hourly.idxmin()))), _hour(pd.Timestamp(2000, 1, 1, int(hourly.idxmax())))
+    kept = plan.expected_net_after_wear_usd
+    trades = plan.charge_kw.sum() > 1e-6
+    text = (
+        f"Based on the past week, Wattson expects power on {plan.date:%A, %B %-d} "
+        f"to be cheapest around {cheap} and most expensive around {peak}. "
+    )
+    text += (
+        f"Its plan: buy when it's cheap and sell into the peak, keeping about "
+        f"{_money(kept, 2)} if prices behave as expected."
+        if trades
+        else "The expected price swing is too small to cover battery wear, so the plan is to sit still."
+    )
+    st.markdown(_md(text))
+    st.plotly_chart(forecast_plan_figure(plan, battery), width="stretch")
+
+    if accuracy.intervals:
+        better = accuracy.skill >= 0
+        st.caption(_md(
+            f"How much to trust this: over the last {accuracy.days} days, the "
+            f"forecast was typically off by {accuracy.mae_usd_per_mwh / 10:.1f}¢ "
+            f"per kWh, {abs(accuracy.skill):.0%} {'better' if better else 'worse'} "
+            "than just assuming each day repeats the day before. It learns the "
+            "usual daily pattern but can't see sudden price spikes coming."
+        ))
+
+
+def _limits() -> None:
+    st.info(
+        "**What this leaves out.** These figures replay past prices. They aren't "
+        "a promise about the future, and prices vary a lot from month to month. "
+        "They also count only buying and selling power. Backup during outages, "
+        "lower bills, and the grid-balancing Base does with its whole fleet "
+        "aren't included, and those are the main reasons people get a Base battery."
     )
 
-    st.subheader("How that compares")
-    st.dataframe(
-        comparison.round(2).style.format(
-            {
-                "net_usd": "${:,.2f}",
-                "net_after_degradation_usd": "${:,.2f}",
-                "usd_per_kw_year": "${:,.2f}",
-                "equivalent_full_cycles": "{:,.2f}",
-                "capture_ratio": "{:.1%}",
+
+def _details(prices, result, metrics, comparison, zone: str, market: str) -> None:
+    with st.expander("Show the detailed numbers"):
+        table = comparison.rename(index=STRATEGY_NAMES)[
+            ["net_usd", "net_after_degradation_usd", "usd_per_kw_year", "equivalent_full_cycles", "capture_ratio"]
+        ].rename(
+            columns={
+                "net_usd": "Made ($)",
+                "net_after_degradation_usd": "Kept after wear ($)",
+                "usd_per_kw_year": "$ per kW per year",
+                "equivalent_full_cycles": "Full charge cycles",
+                "capture_ratio": "Share of perfect hindsight",
             }
-        ),
-        width='stretch',
-    )
-    capture = comparison.loc[
-        comparison["kind"] == "online", "capture_ratio"
-    ].iloc[0]
-    st.caption(
-        "Without a battery there is no spread to capture, so the baseline is $0. "
-        "The rule-based and forecast strategies trade only on information they "
-        "could actually have had: the rule reacts to recent prices, the forecast "
-        "plans each day from earlier days' price shape. Perfect foresight sees "
-        "the whole future and is unreachable."
-        + (f" This run captured **{capture:.0%}** of that bound." if capture == capture else "")
-    )
-
-    per_kw = metrics.usd_per_kw_year
-    if per_kw > 0:
-        gap = per_kw / BENCHMARK_LOW
-        st.metric(
-            "vs. published fleet benchmark",
-            f"{gap:.0%} of ${BENCHMARK_LOW:.0f}/kW-yr",
         )
-        st.caption(
-            f"Optimized ERCOT real-time (RTM) arbitrage is reported around "
-            f"${BENCHMARK_LOW:.0f}-${BENCHMARK_HIGH:.0f} per kW-year "
-            f"(Intertrust). A single zone, a simple threshold rule, and no "
-            f"demand charges or fleet coordination is well short of that."
-        )
-
-    _forecast_section(prices, result, battery)
-
-    st.subheader("Buying low, selling high")
-    st.plotly_chart(
-        dispatch_figure(result, f"{label_for(zone)} dispatch"),
-        width='stretch',
-    )
-
-    left, right = st.columns(2)
-    with left:
-        st.plotly_chart(
-            daily_revenue_figure(result), width='stretch'
-        )
-    with right:
-        st.plotly_chart(
-            cumulative_revenue_figure(result), width='stretch'
-        )
-
-    with st.expander("Price and dispatch detail"):
+        table.index.name = "How it was run"
         st.dataframe(
-            result.ledger[
-                [
-                    "interval_start",
-                    "price_usd_per_mwh",
-                    "charge_kw",
-                    "discharge_kw",
-                    "soc_fraction",
-                    "net_usd",
-                ]
-            ].round(3),
-            width='stretch',
-            height=400,
+            table.style.format(
+                {
+                    "Made ($)": "${:,.2f}",
+                    "Kept after wear ($)": "${:,.2f}",
+                    "$ per kW per year": "${:,.2f}",
+                    "Full charge cycles": "{:,.1f}",
+                    "Share of perfect hindsight": "{:.0%}",
+                },
+                na_rep="",
+            ),
+            width="stretch",
+        )
+        st.caption(_md(
+            "Industry comparison: professionally run grid batteries doing "
+            f"real-time trading in Texas have been reported at about ${BENCHMARK_LOW:.0f}-"
+            f"${BENCHMARK_HIGH:.0f} per kW per year (Intertrust). "
+            f"The forecast planner here: {_money(metrics.usd_per_kw_year, 2)} per kW per year."
+        ))
+
+        first = prices["interval_start"].iloc[0]
+        last = prices["interval_start"].iloc[-1]
+        if (last - first).days <= FULL_DETAIL_MAX_DAYS:
+            st.markdown("**Every 15 minutes of the period**")
+            st.plotly_chart(dispatch_figure(result, f"{label_for(zone)}"), width="stretch")
+        else:
+            st.caption("The every-15-minutes chart is shown for periods up to two months.")
+
+        p = prices["price_usd_per_mwh"]
+        st.caption(_md(
+            f"{label_for(zone)} · {_market_name(market)} · {len(prices):,} price "
+            f"intervals · {_money(p.min(), 2)} to {_money(p.max(), 2)} per MWh · "
+            f"{(p < 0).sum():,} intervals with negative prices"
+        ))
+        ledger = result.ledger
+        st.dataframe(
+            pd.DataFrame(
+                {
+                    "Time": ledger["interval_start"],
+                    "Price (¢ per kWh)": (ledger["price_usd_per_mwh"] / 10).round(2),
+                    "Charging (kW)": ledger["charge_kw"].round(2),
+                    "Selling (kW)": ledger["discharge_kw"].round(2),
+                    "Battery level (%)": (100 * ledger["soc_fraction"]).round(1),
+                    "Money ($)": ledger["net_usd"].round(3),
+                }
+            ),
+            width="stretch",
+            height=360,
         )
 
-    st.caption(
-        "All figures are annualized from historical prices, not forecasts. "
-        "This model covers energy-only arbitrage: it does not value demand "
-        "charge savings, solar self-consumption, or backup power, which are "
-        "usually what make a home battery worth owning."
-    )
+
+def _glossary() -> None:
+    with st.expander("What do these words mean?"):
+        st.markdown(_md("\n".join(f"- **{term}**: {meaning}" for term, meaning in GLOSSARY.items())))
 
 
 def _zone_comparison(
@@ -347,116 +707,67 @@ def _zone_comparison(
     end: str,
     market: str,
     battery,
+    battery_name: str,
     credentials_ready: bool,
 ) -> None:
-    """Compare the same battery across every load zone that has data."""
-    st.subheader("Same battery, every zone")
+    """The same battery and dates in every pricing area."""
+    st.subheader("Which part of Texas pays best?")
+    st.markdown(_md(
+        f"The same {battery_name}, run over the same dates in every pricing "
+        "area. The only difference is how much prices swing in each place."
+    ))
     include_hubs = st.checkbox(
-        "Include hubs as well as load zones", value=False,
-        help="Hubs average across a wider footprint and are not a residential option.",
+        "Also show trading hubs", value=False,
+        help="Hubs are wider regional price averages that energy traders use. "
+             "Homes aren't billed at hub prices.",
     )
-    targets = list(LOAD_ZONES) + list(HUBS) if include_hubs else list(LOAD_ZONES)
-    st.caption(
-        f"{_market_name(market)} prices · {start} to {end} · {battery.name}. "
-        "Locations with no "
-        "cached prices for this window are skipped."
-    )
+    targets = tuple(LOAD_ZONES) + (tuple(HUBS) if include_hubs else ())
 
-    frames: dict[str, pd.DataFrame] = {}
-    skipped: list[str] = []
-    progress = st.progress(0.0, text="Loading zones...")
-    for i, candidate in enumerate(targets, start=1):
-        try:
-            frames[candidate] = _prices_cached(
-                candidate, start, end, market, credentials_ready
-            )
-        except Exception:  # noqa: BLE001 - a missing zone must not break the rest
-            skipped.append(candidate)
-        progress.progress(i / len(targets), text=f"Loaded {label_for(candidate)}")
-
-    if not frames:
-        st.error(
-            f"No location had cached {_market_name(market)} prices for {start}..{end}. "
-            "Try a window that has been fetched, or pull it with the CLI."
+    with st.spinner("Running the battery in every area. Long periods take a minute the first time..."):
+        comparison, skipped, span_frame = _compare_cached(
+            targets, start, end, market, battery, credentials_ready
         )
+
+    if comparison is None:
+        st.error(_md(
+            f"No saved {_market_name(market)} prices for {start} to {end}. "
+            "Try other dates, or connect to the internet to load them."
+        ))
         return
 
-    with st.spinner("Backtesting each zone..."):
-        comparison = compare_zones(frames, battery, ThresholdStrategy())
+    annual = comparison["usd_per_kw_year"] * battery.power_kw
+    best = annual.idxmax()
+    if annual[best] > 0:
+        st.success(_md(
+            f"**{short_name(best)} comes out on top**: a {battery_name} there "
+            f"would have kept about {_money(annual[best])} a year at this pace."
+        ))
+    else:
+        st.error(_md(
+            f"**No area made money after battery wear over these dates.** "
+            f"{short_name(best)} lost the least."
+        ))
 
-    best = comparison.index[0]
-    st.success(
-        f"**{label_for(best)}** is the strongest zone in this window at "
-        f"{_money(comparison.iloc[0]['usd_per_kw_year'], 2)}/kW-year."
-    )
+    st.plotly_chart(zone_comparison_figure(comparison, battery), width="stretch")
 
-    st.plotly_chart(zone_comparison_figure(comparison), width='stretch')
-
-    table = comparison[
-        [
-            "net_usd",
-            "net_after_degradation_usd",
-            "usd_per_kw_year",
-            "equivalent_full_cycles",
-            "mean_price_usd_per_mwh",
-            "p95_price_usd_per_mwh",
-            "intervals",
-            "days",
-        ]
-    ].round(2)
-    table.insert(0, "location", [label_for(code) for code in table.index])
-    table.index.name = "settlement_point"
-    st.dataframe(table, width='stretch')
-
+    span = _span(span_frame)
+    note = f"{_market_name(market)} prices, {span}. Each bar is what one {battery_name} would keep per year after battery wear, at the pace of these dates."
     if skipped:
-        st.caption(
-            "No cached prices for: "
-            + ", ".join(label_for(code) for code in skipped)
-            + ". Fetch them with `wattson fetch` to include them here."
-        )
-    st.caption(
-        "Annualized from this historical window only. Not a forecast, and it "
-        "assumes a battery that cycles freely rather than one held back for "
-        "backup or resilience."
-    )
+        note += " No saved prices for: " + ", ".join(label_for(code) for code in skipped) + "."
+    st.caption(_md(note))
 
-
-def _forecast_section(prices: pd.DataFrame, result, battery) -> None:
-    """Forward look: the day after this window, planned against a forecast."""
-    series = prepare_price_series(prices, result.market, result.settlement_point)
-    st.subheader("Looking ahead: the next day")
-    try:
-        plan = plan_next_day(series, battery)
-    except (ValueError, RuntimeError) as exc:
-        st.info(f"Not enough history in this window to forecast from ({exc}).")
-        return
-    accuracy = forecast_accuracy(series)
-
-    cols = st.columns(3)
-    cols[0].metric(
-        f"Planned for {plan.date:%b %d}",
-        _money(plan.expected_net_after_wear_usd, 2),
-        help="Energy revenue the plan expects if prices follow the forecast, "
-             "after battery wear. Real prices will differ.",
-    )
-    if accuracy.intervals:
-        cols[1].metric(
-            "Typical forecast miss",
-            f"${accuracy.mae_usd_per_mwh:,.2f}/MWh",
-            help=f"Mean absolute error over {accuracy.days} days of this window, "
-                 "each day forecast from earlier days only.",
+    with st.expander("Show the detailed numbers"):
+        table = pd.DataFrame(
+            {
+                "Area": [label_for(code) for code in comparison.index],
+                "Made ($)": comparison["net_usd"].round(2),
+                "Kept after wear ($)": comparison["net_after_degradation_usd"].round(2),
+                "Per year ($)": annual.round(0),
+                "Average price (¢ per kWh)": (comparison["mean_price_usd_per_mwh"] / 10).round(2),
+                "Priciest 5% of the time (¢ per kWh)": (comparison["p95_price_usd_per_mwh"] / 10).round(2),
+            },
+            index=comparison.index,
         )
-        cols[2].metric(
-            "vs. 'same as yesterday'",
-            f"{accuracy.skill:+.0%}",
-            help="Share of the naive forecast's error removed. Positive means "
-                 "the forecast beat assuming each day repeats the one before.",
-        )
-    st.plotly_chart(forecast_plan_figure(plan, battery), width='stretch')
-    st.caption(
-        "The forecast is the median price at each time of day over the "
-        "previous 7 days of data, so it captures the usual daily shape but "
-        "cannot anticipate a price spike. The 'forecast' row in the table "
-        "above shows what trading on this forecast every day of the window "
-        "would actually have earned at real prices."
-    )
+        table.index.name = "code"
+        st.dataframe(table, width="stretch")
+    _limits()

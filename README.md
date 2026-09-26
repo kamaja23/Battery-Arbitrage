@@ -38,17 +38,36 @@ python -m venv .venv && .venv/bin/pip install -e '.[dev]'
 
 ## Demo walkthrough
 
-1. **Opening screen**: Austin Energy (`LZ_AEN`), Base Core, the latest cached
-   30-day window. It loads from disk, so it works with no network.
-2. **Headline**: net earned, after battery wear, and revenue per kW-year.
-   Payback shows "n/a" because Base owns the battery and pricing varies by
-   address. Enter a price under *Customize size* to see one.
-3. **How that compares**: the $0 no-battery baseline, the rule-based strategy,
-   the forecast-driven strategy, and the perfect-foresight upper bound.
-4. **Looking ahead**: the next day's forecast price curve and the plan
-   optimized against it, with the forecast's measured error beside it.
-5. **Compare zones** (sidebar): the same battery across all eight load zones,
-   optionally with the five trading hubs.
+The page is written for someone who has never heard of ERCOT. Prices are shown
+in cents per kWh (the unit on a home bill) and earnings in dollars for the
+chosen battery. Industry units live under "Show the detailed numbers".
+
+1. **How it works**: three sentences on why a battery can earn money at all.
+2. **Headline**: what a Base Core in the Austin Energy area would have kept
+   over the last month up to today, and that pace scaled to a year. Presets
+   run from the last 7 days to the last year, or pick custom dates.
+3. **A day in the life**: pick any day to see the price of power and the
+   moments the battery bought and sold. It opens on the best day.
+4. **What it made each day**: green and red bars, plus how much of the money
+   came from a few spiky days.
+5. **How smart does the battery need to be?**: no battery, a simple rule, the
+   forecast planner Wattson uses, and perfect hindsight as a yardstick.
+6. **What tomorrow might look like**: the forecast for the next day, the plan,
+   and how accurate the forecast has been.
+7. **Compare all of Texas** (sidebar): the same battery in every pricing area,
+   in dollars per year.
+
+The page is driven by the **forecast planner**. Across April–August, after
+battery wear, it beat the simple rule in 32 of 40 zone-months.
+
+## How prices are loaded
+
+Finished days are saved in one file per calendar month and never change.
+Today's prices are still being published, so they are always fetched live and
+never saved; the page shows how current they are. Any date range is assembled
+from those pieces, so with no internet the app still works, just without
+today, and says so. A day saved before it had finished is downloaded again;
+the few 15-minute prices ERCOT itself never published are accepted as they are.
 
 ## Command line
 
@@ -142,6 +161,7 @@ src/wattson/sim/            battery physics and backtest engine
 src/wattson/strategies/     threshold, forecast, perfect foresight
 src/wattson/forecast.py     price forecast, accuracy scoring, next-day plan
 src/wattson/metrics.py      economics, strategy and zone comparisons, rank stability
+src/wattson/parallel.py     runs long backtests on several CPU cores
 src/wattson/ui.py           Streamlit app
 src/wattson/cli.py          command line
 ```

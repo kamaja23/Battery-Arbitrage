@@ -56,3 +56,22 @@ class TestLabels:
 
     def test_an_unknown_code_degrades_to_itself(self):
         assert label_for("LZ_NOWHERE") == "LZ_NOWHERE"
+
+
+class TestNameFor:
+    def test_it_drops_the_code(self):
+        from wattson.zones import name_for
+
+        assert name_for("LZ_AEN") == "Austin Energy (Austin / Travis Co.)"
+        assert "LZ_" not in name_for("LZ_RAYBN")
+
+    def test_every_zone_and_hub_has_a_distinct_name(self):
+        from wattson.zones import name_for
+
+        names = [name_for(c) for c in LOAD_ZONES + HUBS]
+        assert len(set(names)) == len(names)
+
+    def test_unknown_codes_fall_back_to_the_code(self):
+        from wattson.zones import name_for
+
+        assert name_for("LZ_NOWHERE") == "LZ_NOWHERE"

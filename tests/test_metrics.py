@@ -285,3 +285,53 @@ def test_every_row_reports_per_kw_year_on_the_same_after_wear_basis(prices):
         assert implied == pytest.approx(years), label
     optimal = frame.loc["perfect foresight (upper bound)"]
     assert optimal["net_after_degradation_usd"] < optimal["net_usd"]
+
+
+class TestParallel:
+    """Running on several cores must not change a single number."""
+
+    @staticmethod
+    def _long(point: str, seed: int) -> pd.DataFrame:
+        from wattson.data.providers import PriceRequest, SyntheticProvider
+
+        return SyntheticProvider(seed=seed).fetch(
+            PriceRequest(settlement_point=point, start_date="2026-05-01", end_date="2026-07-15")
+        )
+
+    def test_zones_in_parallel_match_sequential(self):
+        from wattson.config import BASE_CORE
+        from wattson.parallel import PARALLEL_MIN_INTERVALS
+        from wattson.strategies.forecast import ForecastStrategy
+
+        from wattson.metrics import compare_zones
+
+        frames = {"LZ_A": self._long("LZ_A", 1), "LZ_B": self._long("LZ_B", 2), "LZ_C": self._long("LZ_C", 3)}
+        assert sum(map(len, frames.values())) >= PARALLEL_MIN_INTERVALS
+        one = compare_zones(frames, BASE_CORE, ForecastStrategy(), workers=1)
+        many = compare_zones(frames, BASE_CORE, ForecastStrategy(), workers=3)
+        pd.testing.assert_frame_equal(one, many)
+
+    def test_strategies_in_parallel_match_sequential(self):
+        from wattson.config import BASE_CORE
+
+        prices = self._long("LZ_A", 4)
+        one = compare_strategies(prices, BASE_CORE, ThresholdStrategy(), workers=1)
+        many = compare_strategies(prices, BASE_CORE, ThresholdStrategy(), workers=3)
+        pd.testing.assert_frame_equal(one, many)
+
+    def test_precomputed_results_are_used_not_rerun(self, monkeypatch):
+        import wattson.sim.engine as engine
+        from wattson.config import BASE_CORE
+        from wattson.sim.engine import run_backtest
+        from wattson.strategies.forecast import ForecastStrategy
+
+        prices = self._long("LZ_A", 5)
+        planned = run_backtest(prices, BASE_CORE, ForecastStrategy())
+        expected = compare_strategies(prices, BASE_CORE, ThresholdStrategy())
+
+        calls = []
+        real = engine.run_backtest
+        monkeypatch.setattr(engine, "run_backtest", lambda *a, **k: calls.append(a[2].name) or real(*a, **k))
+        got = compare_strategies(prices, BASE_CORE, ThresholdStrategy(), forecast_result=planned)
+        assert "forecast" not in calls
+        pd.testing.assert_frame_equal(expected, got)

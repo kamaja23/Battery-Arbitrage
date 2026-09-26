@@ -207,17 +207,42 @@ def compare_strategies(
     *,
     include_optimal: bool = True,
     include_forecast: bool = True,
+    workers: int = 1,
+    online_result=None,
+    forecast_result=None,
+    optimal_solution=None,
 ) -> pd.DataFrame:
     """Backtest one battery across baseline, the online rule, the forecast-driven
     strategy, and perfect foresight.
 
     Returns a frame indexed by label with the headline economics for each, so
     the CLI and the UI report the same comparison.
+
+    Results already computed elsewhere can be passed in so nothing runs twice.
+    With ``workers > 1`` and a long enough window, whatever still needs running
+    runs in parallel processes.
     """
-    from wattson.sim.engine import run_backtest
+    from wattson.parallel import PARALLEL_MIN_INTERVALS, backtest_job, optimal_job, pool
+    from wattson.sim.engine import _resolve_market, run_backtest
+    from wattson.strategies.forecast import ForecastStrategy
     from wattson.strategies.perfect_foresight import solve_perfect_foresight
 
-    result = run_backtest(prices, battery, strategy)
+    points = sorted(prices["settlement_point"].unique())
+    point = points[0] if len(points) == 1 else None
+    need_optimal = include_optimal and optimal_solution is None
+    need_forecast = include_forecast and forecast_result is None
+    jobs = (online_result is None) + need_optimal + need_forecast
+    if workers > 1 and jobs > 1 and point and len(prices) >= PARALLEL_MIN_INTERVALS:
+        market = _resolve_market(prices, "RTM", point)
+        with pool(min(workers, jobs)) as ex:
+            f_online = ex.submit(backtest_job, (prices, battery, strategy)) if online_result is None else None
+            f_optimal = ex.submit(optimal_job, (prices, battery, market, point)) if need_optimal else None
+            f_forecast = ex.submit(backtest_job, (prices, battery, ForecastStrategy())) if need_forecast else None
+            online_result = f_online.result() if f_online else online_result
+            optimal_solution = f_optimal.result() if f_optimal else optimal_solution
+            forecast_result = f_forecast.result() if f_forecast else forecast_result
+
+    result = online_result if online_result is not None else run_backtest(prices, battery, strategy)
     online = compute_metrics(result)
 
     baseline = no_battery_baseline(
@@ -240,7 +265,11 @@ def compare_strategies(
         series = prepare_price_series(
             prices, result.market, result.settlement_point
         )
-        optimal = solve_perfect_foresight(series, battery)
+        optimal = (
+            optimal_solution
+            if optimal_solution is not None
+            else solve_perfect_foresight(series, battery)
+        )
         optimal_net = optimal.net_usd
         hours = optimal.to_frame(series.index)
         optimal_wear = battery.degradation_cost_per_kwh * float(
@@ -269,7 +298,11 @@ def compare_strategies(
     if include_forecast:
         from wattson.strategies.forecast import ForecastStrategy
 
-        planned = run_backtest(prices, battery, ForecastStrategy())
+        planned = (
+            forecast_result
+            if forecast_result is not None
+            else run_backtest(prices, battery, ForecastStrategy())
+        )
         f_net = compute_metrics(planned).net_usd
         f_capture = f_net / optimal_net if optimal_net > 0 else None
         fm = compute_metrics(planned, capture_ratio=f_capture)
@@ -312,6 +345,7 @@ def compare_zones(
     frames: Mapping[str, pd.DataFrame],
     battery: BatteryConfig,
     strategy: Strategy,
+    workers: int = 1,
 ) -> pd.DataFrame:
     """Run one strategy across several load zones, one row per zone.
 
@@ -319,11 +353,19 @@ def compare_zones(
     on the same battery, window, and market so the differences come from the
     price shape alone.
     """
+    from wattson.parallel import PARALLEL_MIN_INTERVALS, backtest_job, pool
     from wattson.sim.engine import run_backtest
 
+    items = list(frames.items())
+    total = sum(len(frame) for _, frame in items)
+    if workers > 1 and len(items) > 1 and total >= PARALLEL_MIN_INTERVALS:
+        with pool(min(workers, len(items))) as ex:
+            results = list(ex.map(backtest_job, [(f, battery, strategy) for _, f in items]))
+    else:
+        results = [run_backtest(frame, battery, strategy) for _, frame in items]
+
     rows: list[dict[str, object]] = []
-    for zone, frame in frames.items():
-        result = run_backtest(frame, battery, strategy)
+    for (zone, frame), result in zip(items, results):
         m = compute_metrics(result)
         rows.append(
             {

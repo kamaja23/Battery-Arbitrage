@@ -80,3 +80,19 @@ def label_for(code: str) -> str:
     """Readable label for a settlement point, falling back to the raw code."""
     point = SETTLEMENT_POINTS.get(code)
     return point.full_label if point else code
+
+
+def name_for(code: str) -> str:
+    """Place name without the raw code, for tight spaces like chart axes.
+
+    ``"LZ_AEN"`` -> ``"Austin Energy (Austin / Travis Co.)"``. Falls back to
+    the code for anything unknown.
+    """
+    point = SETTLEMENT_POINTS.get(code)
+    return point.label if point else code
+
+
+def short_name(code: str) -> str:
+    """Just the name, for use inside a sentence: ``"LZ_AEN"`` -> ``"Austin Energy"``."""
+    point = SETTLEMENT_POINTS.get(code)
+    return point.name if point else code

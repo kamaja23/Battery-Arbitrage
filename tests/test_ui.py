@@ -1,15 +1,26 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
+
+import datetime as dt
 
 import pandas as pd
 import pytest
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from wattson.data.providers import PriceRequest, SyntheticProvider
-from wattson.metrics import BASELINE_LABEL
 
 APP = str(Path(__file__).resolve().parents[1] / "app.py")
+COMPARE = "Compare all of Texas"
+
+
+def _synthetic(price: float | None = None) -> pd.DataFrame:
+    frame = SyntheticProvider(seed=11).fetch(
+        PriceRequest(settlement_point="LZ_WEST", start_date="2026-06-01", end_date="2026-06-14")
+    )
+    return frame if price is None else frame.assign(price_usd_per_mwh=price)
 
 
 @pytest.fixture
@@ -17,16 +28,35 @@ def offline_ui(monkeypatch):
     """Run the app against synthetic prices so tests never touch the network."""
     import wattson.ui as ui
 
-    frame = SyntheticProvider(seed=11).fetch(
-        PriceRequest(
-            settlement_point="LZ_WEST",
-            start_date="2026-06-01",
-            end_date="2026-06-14",
-        )
-    )
+    st.cache_data.clear()  # cached results must not leak between tests
+    frame = _synthetic()
     monkeypatch.setattr(ui, "_prices_cached", lambda *a, **k: frame)
     monkeypatch.setattr(ui, "_load_credentials", lambda: False)
     return AppTest.from_file(APP, default_timeout=120)
+
+
+@pytest.fixture
+def losing_ui(monkeypatch):
+    """Flat prices: nothing to gain, so the battery cannot make money."""
+    import wattson.ui as ui
+
+    st.cache_data.clear()
+    frame = _synthetic(price=30.0)
+    monkeypatch.setattr(ui, "_prices_cached", lambda *a, **k: frame)
+    monkeypatch.setattr(ui, "_load_credentials", lambda: False)
+    return AppTest.from_file(APP, default_timeout=120)
+
+
+def _metric(app, label: str):
+    return next(m for m in app.metric if m.label == label)
+
+
+def _captions(app) -> str:
+    return " ".join(c.value for c in app.caption)
+
+
+def _expander(app, label: str):
+    return next(e for e in app.expander if e.label == label)
 
 
 class TestRenders:
@@ -34,46 +64,171 @@ class TestRenders:
         offline_ui.run()
         assert not offline_ui.exception
 
-    def test_it_answers_the_homeowner_question_up_front(self, offline_ui):
+    def test_it_asks_the_question_in_plain_words(self, offline_ui):
         offline_ui.run()
         assert offline_ui.title[0].value == "Wattson"
-        assert "battery pay for itself" in offline_ui.header[0].value
+        assert "What could a Base battery earn" in offline_ui.header[0].value
 
-    def test_it_shows_the_headline_economics(self, offline_ui):
+    def test_it_explains_the_idea_before_any_numbers(self, offline_ui):
+        offline_ui.run()
+        intro = " ".join(m.value for m in offline_ui.markdown[:3])
+        assert "every 15 minutes" in intro
+        assert "buy low and sell high" in intro
+        assert "real past prices" in intro
+
+    def test_it_shows_the_headline_economics_in_plain_words(self, offline_ui):
         offline_ui.run()
         labels = [m.label for m in offline_ui.metric]
-        assert "Net earned" in labels
-        assert "Per kW / year" in labels
-        assert "Payback" in labels
+        for label in ("Made buying low, selling high", "Battery wear", "Kept", "Per year at this pace"):
+            assert label in labels
 
-    def test_it_shows_the_dispatch_chart(self, offline_ui):
+    def test_it_walks_through_the_story_in_order(self, offline_ui):
         offline_ui.run()
-        assert any("Buying low" in s.value for s in offline_ui.subheader)
+        assert [s.value for s in offline_ui.subheader] == [
+            "A day in the life",
+            "What it made each day",
+            "How smart does the battery need to be?",
+            "What tomorrow might look like",
+        ]
 
-    def test_it_lists_the_baseline_alongside_the_strategies(self, offline_ui):
+    def test_prices_are_in_cents_per_kwh_on_the_main_page(self, offline_ui):
         offline_ui.run()
-        table = next(df.value for df in offline_ui.dataframe)
-        assert BASELINE_LABEL in table.index
-        assert "threshold" in table.index
+        price_line = next(c.value for c in offline_ui.caption if "ranged from" in c.value)
+        assert re.search(r"ranged from -?[\d.]+¢ to [\d.]+¢ per kWh", price_line)
+        assert "MWh" not in price_line
 
-    def test_it_explains_why_the_baseline_is_zero(self, offline_ui):
+    def test_it_says_these_are_past_prices_not_a_promise(self, offline_ui):
         offline_ui.run()
-        captions = " ".join(c.value for c in offline_ui.caption)
-        assert "no spread to capture" in captions
-
-    def test_it_flags_that_figures_are_annualized_not_forecast(self, offline_ui):
-        offline_ui.run()
-        captions = " ".join(c.value for c in offline_ui.caption)
-        assert "not forecasts" in captions
+        info = " ".join(i.value for i in offline_ui.info)
+        assert "aren't a promise about the future" in info
+        assert "Backup during outages" in info
 
     def test_it_warns_when_credentials_are_missing(self, offline_ui):
         offline_ui.run()
         assert any("credentials" in w.value for w in offline_ui.warning)
 
-    def test_it_shows_a_ledger_for_auditability(self, offline_ui):
+
+class TestPlainLanguage:
+    JARGON = re.compile(
+        r"arbitrage|kW-year|\bper kW\b|MWh|\bSoC\b|state of charge|dispatch|capture"
+        r"|degradation|baseline|threshold|annuali[sz]ed|settlement|foresight",
+        re.IGNORECASE,
+    )
+
+    @staticmethod
+    def _main_page_text(app) -> list[str]:
+        """Text a first-time visitor reads: everything outside the expanders."""
+        kinds = ("success", "error", "info", "caption", "markdown", "subheader", "header")
+        tucked_away = {
+            el.value
+            for exp in app.expander
+            for kind in kinds
+            for el in getattr(exp, kind)
+        }
+        return [
+            el.value
+            for kind in kinds
+            for el in getattr(app.main, kind)
+            if el.value not in tucked_away
+        ]
+
+    def test_the_main_page_avoids_industry_jargon(self, offline_ui):
         offline_ui.run()
-        ledger = offline_ui.dataframe[-1].value
-        assert {"price_usd_per_mwh", "charge_kw", "soc_fraction"} <= set(
+        hits = [t for t in self._main_page_text(offline_ui) if self.JARGON.search(t)]
+        assert hits == []
+
+    def test_the_compare_view_avoids_industry_jargon(self, offline_ui):
+        offline_ui.run()
+        offline_ui.radio[0].set_value(COMPARE).run()
+        hits = [t for t in self._main_page_text(offline_ui) if self.JARGON.search(t)]
+        assert hits == []
+
+    def test_there_is_a_glossary(self, offline_ui):
+        offline_ui.run()
+        glossary = _expander(offline_ui, "What do these words mean?")
+        text = " ".join(m.value for m in glossary.markdown)
+        for term in ("ERCOT", "Pricing area", "kWh and kW", "Battery wear"):
+            assert term in text
+
+
+class TestDayInTheLife:
+    def test_it_opens_on_the_best_day(self, offline_ui):
+        offline_ui.run()
+        slider = offline_ui.select_slider[0]
+        assert "the best day in this period" in _captions(offline_ui)
+        assert slider.value in slider.options or slider.value is not None
+
+    def test_it_says_what_the_battery_paid_and_got(self, offline_ui):
+        offline_ui.run()
+        text = _captions(offline_ui)
+        assert "bought power at an average of" in text
+        assert "per kWh and sold it at" in text
+
+    def test_the_first_day_explains_why_the_battery_waited(self, offline_ui):
+        import datetime as dt
+
+        offline_ui.run()
+        offline_ui.select_slider[0].set_value(dt.date(2026, 6, 1)).run()
+        assert not offline_ui.exception
+        assert "no past prices to learn from" in _captions(offline_ui)
+
+
+class TestDayByDay:
+    def test_it_explains_the_colors_and_the_takeaway(self, offline_ui):
+        offline_ui.run()
+        text = _captions(offline_ui)
+        assert "Green days made money" in text
+        assert re.search(r"best 3 of 14 days made \d+% of the total", text)
+
+    def test_the_takeaway_matches_how_concentrated_earnings_are(self):
+        import wattson.ui as ui
+
+        captured = []
+
+        class Result:
+            def __init__(self, values):
+                idx = pd.date_range("2026-06-01", periods=len(values) * 96, freq="15min", tz="America/Chicago")
+                per_day = [v / 96 for v in values for _ in range(96)]
+                self.ledger = pd.DataFrame({"interval_start": idx, "net_usd": per_day})
+
+        orig = (ui.st.subheader, ui.st.plotly_chart, ui.st.caption)
+        ui.st.subheader = lambda *a, **k: None
+        ui.st.plotly_chart = lambda *a, **k: None
+        ui.st.caption = lambda text, **k: captured.append(text)
+        try:
+            ui._day_by_day(Result([1.0] * 30))                 # perfectly even
+            ui._day_by_day(Result([10, 10, 10] + [1.0] * 27))   # 3 days = 53%
+            ui._day_by_day(Result([5, 5, 5] + [1.0] * 27))      # 3 days = 36%, 3.6x even
+        finally:
+            ui.st.subheader, ui.st.plotly_chart, ui.st.caption = orig
+        assert "fairly even" in captured[0]
+        assert "most of the money comes from a few days" in captured[1]
+        assert "a few price spikes do a lot of the work" in captured[2]
+
+
+class TestStrategies:
+    def test_it_explains_each_way_of_running_the_battery(self, offline_ui):
+        offline_ui.run()
+        text = " ".join(m.value for m in offline_ui.markdown)
+        for name in ("No battery", "Simple rule", "Forecast planner", "Perfect hindsight"):
+            assert name in text
+
+    def test_the_detailed_table_uses_plain_names(self, offline_ui):
+        offline_ui.run()
+        table = _expander(offline_ui, "Show the detailed numbers").dataframe[0].value
+        assert list(table.index) == [
+            "No battery",
+            "Simple rule",
+            "Forecast planner (what Wattson uses)",
+            "Perfect hindsight (impossible in practice)",
+        ]
+        assert "Kept after wear ($)" in table.columns
+        assert table.loc["No battery", "Made ($)"] == 0.0
+
+    def test_the_audit_trail_is_still_available(self, offline_ui):
+        offline_ui.run()
+        ledger = _expander(offline_ui, "Show the detailed numbers").dataframe[-1].value
+        assert {"Time", "Price (¢ per kWh)", "Charging (kW)", "Selling (kW)", "Battery level (%)"} <= set(
             ledger.columns
         )
 
@@ -81,9 +236,9 @@ class TestRenders:
 class TestInteraction:
     def test_switching_base_models_changes_the_result(self, offline_ui):
         offline_ui.run()
-        core = offline_ui.metric[0].value
+        core = _metric(offline_ui, "Kept").value
         offline_ui.selectbox[1].set_value("base_core_dual").run()
-        dual = offline_ui.metric[0].value
+        dual = _metric(offline_ui, "Kept").value
         assert core != dual
 
     def test_every_base_model_runs_without_error(self, offline_ui):
@@ -96,9 +251,23 @@ class TestInteraction:
 
     def test_the_compare_view_runs(self, offline_ui):
         offline_ui.run()
-        offline_ui.radio[0].set_value("Compare zones").run()
+        offline_ui.radio[0].set_value(COMPARE).run()
         assert not offline_ui.exception
-        assert offline_ui.success
+        assert offline_ui.subheader[0].value == "Which part of Texas pays best?"
+        assert "comes out on top" in offline_ui.success[0].value
+        assert "a year at this pace" in offline_ui.success[0].value
+
+    def test_day_ahead_prices_run(self, offline_ui):
+        offline_ui.run()
+        offline_ui.radio[1].set_value("DAM").run()
+        assert not offline_ui.exception
+
+    def test_a_purchase_price_adds_a_payback_figure(self, offline_ui):
+        offline_ui.run()
+        offline_ui.checkbox[0].set_value(True).run()
+        offline_ui.number_input[0].set_value(15_000.0).run()
+        assert not offline_ui.exception
+        assert "Pays for itself in" in [m.label for m in offline_ui.metric]
 
 
 class TestDemoDefaults:
@@ -117,8 +286,7 @@ class TestDemoDefaults:
 
     def test_payback_is_not_claimed_without_a_price(self, offline_ui):
         offline_ui.run()
-        payback = next(m for m in offline_ui.metric if m.label == "Payback")
-        assert payback.value == "n/a"
+        assert "Pays for itself in" not in [m.label for m in offline_ui.metric]
 
 
 class TestFailureHandling:
@@ -131,31 +299,24 @@ class TestFailureHandling:
         monkeypatch.setattr(ui, "_prices_cached", boom)
         offline_ui.run()
         assert not offline_ui.exception
-        assert any("Could not load prices" in e.value for e in offline_ui.error)
+        assert any("Couldn't load prices" in e.value for e in offline_ui.error)
 
 
 class TestCachedPricesWithoutCredentials:
     """A seeded cache should be enough to run, even with no API access."""
 
-    def test_it_serves_cached_prices_when_credentials_are_missing(
-        self, monkeypatch, tmp_path
-    ):
+    def test_it_serves_cached_prices_when_credentials_are_missing(self, monkeypatch, tmp_path):
         import wattson.data.cache as cache
         import wattson.ui as ui
 
         request = PriceRequest(
-            settlement_point="LZ_WEST",
-            start_date="2026-06-01",
-            end_date="2026-06-14",
+            settlement_point="LZ_WEST", start_date="2026-06-01", end_date="2026-06-14"
         )
         expected = SyntheticProvider(seed=3).fetch(request)
         monkeypatch.setattr(cache, "DEFAULT_CACHE_DIR", tmp_path)
         cache.save(request, expected, tmp_path)
 
-        monkeypatch.setattr(ui, "load", cache.load)
-        got = ui._prices_cached.__wrapped__(
-            "LZ_WEST", "2026-06-01", "2026-06-14", "RTM", False
-        )
+        got = ui._prices_cached.__wrapped__("LZ_WEST", "2026-06-01", "2026-06-14", "RTM", False)
         assert len(got) == len(expected)
         assert got["price_usd_per_mwh"].abs().sum() == pytest.approx(
             expected["price_usd_per_mwh"].abs().sum()
@@ -168,11 +329,8 @@ class TestCachedPricesWithoutCredentials:
         import wattson.ui as ui
 
         monkeypatch.setattr(cache, "DEFAULT_CACHE_DIR", tmp_path)
-        monkeypatch.setattr(ui, "load", cache.load)
         with pytest.raises(RuntimeError) as excinfo:
-            ui._prices_cached.__wrapped__(
-                "LZ_WEST", "2026-06-01", "2026-06-14", "RTM", False
-            )
+            ui._prices_cached.__wrapped__("LZ_WEST", "2026-06-01", "2026-06-14", "RTM", False)
         message = str(excinfo.value)
         assert "no cached Real-time (RTM) prices" in message
         assert "LZ_WEST" in message
@@ -180,61 +338,121 @@ class TestCachedPricesWithoutCredentials:
 
 
 class TestLocationLabels:
-    def test_the_zone_selector_offers_readable_names(self, offline_ui):
+    def test_the_area_picker_offers_readable_names(self, offline_ui):
         from wattson.zones import LOAD_ZONES, label_for
 
         offline_ui.run()
         options = offline_ui.selectbox[0].options
-        # The widget renders the readable name, not the bare code.
         assert set(options) == {label_for(code) for code in LOAD_ZONES}
-        # ...but the raw code stays visible for traceability.
         assert all(code in " ".join(options) for code in LOAD_ZONES)
 
-    def test_the_selector_warns_that_zones_follow_the_utility(self, offline_ui):
+    def test_the_picker_explains_that_areas_follow_the_utility(self, offline_ui):
         offline_ui.run()
-        help_text = offline_ui.selectbox[0].help or ""
-        assert "service territory" in help_text
-
+        picker = offline_ui.selectbox[0]
+        assert picker.label == "Where in Texas?"
+        assert "which company delivers your electricity" in (picker.help or "")
 
 
 class TestForecastSection:
-    def test_it_shows_a_next_day_plan(self, offline_ui):
+    def test_it_describes_tomorrow_in_a_sentence(self, offline_ui):
         offline_ui.run()
-        assert any("Looking ahead" in s.value for s in offline_ui.subheader)
-        labels = [m.label for m in offline_ui.metric]
-        assert any(label.startswith("Planned for") for label in labels)
-        assert "vs. 'same as yesterday'" in labels
+        text = " ".join(m.value for m in offline_ui.markdown)
+        assert "cheapest around" in text and "most expensive around" in text
 
-    def test_the_forecast_strategy_is_in_the_comparison(self, offline_ui):
+    def test_it_says_how_much_to_trust_the_forecast(self, offline_ui):
         offline_ui.run()
-        table = next(df.value for df in offline_ui.dataframe)
-        assert "forecast" in table.index
+        text = _captions(offline_ui)
+        assert "How much to trust this" in text
+        assert "than just assuming each day repeats the day before" in text
 
 
-class TestDefaultWindow:
-    def test_it_opens_on_the_latest_cached_window(self, monkeypatch):
-        import datetime as dt
+class TestDatePresets:
+    TODAY = dt.date(2026, 9, 26)
 
+    def test_it_offers_presets_and_custom_dates(self, offline_ui):
+        offline_ui.run()
+        picker = offline_ui.selectbox[2]
+        assert picker.label == "Dates to replay"
+        assert picker.options == [
+            "Last 7 days", "Last month", "Last 2 months", "Last 3 months",
+            "Last 6 months", "Last year", "Custom dates",
+        ]
+
+    def test_it_opens_on_the_last_month_up_to_today(self, offline_ui, monkeypatch):
         import wattson.ui as ui
 
-        monkeypatch.setattr(
-            ui,
-            "cached_windows",
-            lambda point, market: [
-                (dt.date(2026, 6, 1), dt.date(2026, 6, 30)),
-                (dt.date(2026, 8, 26), dt.date(2026, 9, 24)),
-                (dt.date(2026, 9, 24), dt.date(2026, 9, 24)),  # too short
-            ],
-        )
-        assert ui._default_window() == (dt.date(2026, 8, 26), dt.date(2026, 9, 24))
+        monkeypatch.setattr(ui, "_today", lambda: self.TODAY)
+        offline_ui.run()
+        assert offline_ui.selectbox[2].value == "Last month"
+        assert "Aug 27, 2026 to today (Sep 26)" in _captions(offline_ui)
 
-    def test_with_nothing_cached_it_falls_back_to_the_last_30_days(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("choice", "start"),
+        [
+            ("Last 7 days", dt.date(2026, 9, 20)),
+            ("Last month", dt.date(2026, 8, 27)),
+            ("Last 2 months", dt.date(2026, 7, 27)),
+            ("Last 6 months", dt.date(2026, 3, 27)),
+            ("Last year", dt.date(2025, 9, 27)),
+        ],
+    )
+    def test_every_preset_ends_today(self, choice, start):
         import wattson.ui as ui
 
-        monkeypatch.setattr(ui, "cached_windows", lambda point, market: [])
-        start, end = ui._default_window()
-        assert (end - start).days == 29
-        assert end == (pd.Timestamp("today").normalize() - pd.Timedelta(days=1)).date()
+        assert ui._preset_window(choice, self.TODAY) == (start, self.TODAY)
+
+    def test_custom_dates_can_run_up_to_today(self, offline_ui, monkeypatch):
+        import wattson.ui as ui
+
+        monkeypatch.setattr(ui, "_today", lambda: self.TODAY)
+        offline_ui.run()
+        assert not offline_ui.date_input
+        offline_ui.selectbox[2].set_value("Custom dates").run()
+        picker = offline_ui.date_input[0]
+        assert picker.value == (dt.date(2026, 8, 28), self.TODAY)
+        assert picker.max == self.TODAY
+        assert not offline_ui.exception
+
+    def test_today_is_texas_time(self, monkeypatch):
+        import wattson.ui as ui
+
+        # 11:30 pm in Texas is already the next day in UTC.
+        late = pd.Timestamp("2026-09-26 23:30", tz="America/Chicago")
+        monkeypatch.setattr(ui.pd.Timestamp, "now", classmethod(lambda cls, tz=None: late.tz_convert(tz)))
+        assert ui._today() == dt.date(2026, 9, 26)
+
+
+class TestDataNotes:
+    @staticmethod
+    def _with_attrs(**attrs):
+        frame = _synthetic()
+        frame.attrs.update(attrs)
+        return frame
+
+    def _run(self, monkeypatch, frame):
+        import wattson.ui as ui
+
+        st.cache_data.clear()
+        monkeypatch.setattr(ui, "_prices_cached", lambda *a, **k: frame)
+        monkeypatch.setattr(ui, "_load_credentials", lambda: False)
+        app = AppTest.from_file(APP, default_timeout=120)
+        app.run()
+        return app
+
+    def test_missing_days_are_named(self, monkeypatch):
+        frame = self._with_attrs(missing_days=[dt.date(2026, 9, d) for d in (21, 22, 23, 25)])
+        app = self._run(monkeypatch, frame)
+        warning = " ".join(w.value for w in app.warning)
+        assert "No prices for 4 days in this period (Sep 21–23, Sep 25)" in warning
+
+    def test_offline_it_says_why_today_is_missing(self, monkeypatch):
+        app = self._run(monkeypatch, self._with_attrs(today_error="offline"))
+        assert "Today's prices need an internet connection, so this runs through Jun 14" in _captions(app)
+
+    def test_when_today_loads_it_says_how_current_it_is(self, monkeypatch):
+        app = self._run(monkeypatch, self._with_attrs(includes_today=True))
+        assert "Today's prices are included up to 11:45 PM" in _captions(app)
+        assert "need an internet connection" not in _captions(app)
 
 
 class TestMarketLabels:
@@ -246,9 +464,101 @@ class TestMarketLabels:
 
     def test_the_explanation_follows_the_choice(self, offline_ui):
         offline_ui.run()
-        captions = " ".join(c.value for c in offline_ui.caption)
-        assert "every 15 minutes" in captions
+        assert "every 15 minutes as supply and demand shift" in _captions(offline_ui)
         offline_ui.radio[1].set_value("DAM").run()
-        captions = " ".join(c.value for c in offline_ui.caption)
-        assert "the day before" in captions
-        assert "every 15 minutes" not in captions
+        text = _captions(offline_ui)
+        assert "the day before" in text
+        assert "every 15 minutes as supply and demand shift" not in text
+
+
+def _markdown_texts(app) -> list[str]:
+    """Every piece of text Streamlit renders as markdown."""
+    kinds = ("success", "error", "warning", "info", "caption", "markdown", "header", "subheader")
+    return [el.value for kind in kinds for el in getattr(app, kind)]
+
+
+def _unescaped_dollars(app) -> list[str]:
+    return [t for t in _markdown_texts(app) if re.search(r"(?<!\\)\$", t)]
+
+
+class TestDollarSigns:
+    """Two bare $ signs make Streamlit render a LaTeX formula and eat the text."""
+
+    def test_no_unescaped_dollars_on_the_main_view(self, offline_ui):
+        offline_ui.run()
+        assert _unescaped_dollars(offline_ui) == []
+
+    def test_no_unescaped_dollars_when_the_battery_loses_money(self, losing_ui):
+        losing_ui.run()
+        assert losing_ui.error
+        assert _unescaped_dollars(losing_ui) == []
+
+    def test_no_unescaped_dollars_in_the_zone_comparison(self, offline_ui):
+        offline_ui.run()
+        offline_ui.radio[0].set_value(COMPARE).run()
+        assert _unescaped_dollars(offline_ui) == []
+
+
+class TestHeadline:
+    def test_it_leads_with_what_the_battery_kept(self, offline_ui):
+        offline_ui.run()
+        text = offline_ui.success[0].value
+        assert "a Base Core in the Austin Energy area would have kept \\$" in text
+        assert "a year at this pace" in text
+        assert "buying power when it was cheap and selling it back" in text
+        assert "battery wear cost" in text
+
+    def test_the_window_is_dated_by_its_last_day_not_the_midnight_after(self, offline_ui):
+        offline_ui.run()
+        text = offline_ui.success[0].value
+        assert "Over these 14 days (Jun 1 – Jun 14, 2026)" in text
+
+    def test_the_loss_message_shows_the_numbers(self, losing_ui):
+        losing_ui.run()
+        text = losing_ui.error[0].value
+        assert "would not have made money" in text
+        assert "battery wear cost" in text
+        assert "Prices didn't swing enough" in text
+
+
+class TestLongPeriods:
+    def test_a_span_across_years_names_both_years(self):
+        import wattson.ui as ui
+
+        idx = pd.DatetimeIndex(["2025-09-27 00:00", "2026-09-26 12:00"]).tz_localize("America/Chicago")
+        assert ui._span(pd.DataFrame({"interval_start": idx})) == "Sep 27, 2025 – Sep 26, 2026"
+
+    def test_a_span_within_a_year_names_it_once(self):
+        import wattson.ui as ui
+
+        idx = pd.DatetimeIndex(["2026-08-27 00:00", "2026-09-26 12:00"]).tz_localize("America/Chicago")
+        assert ui._span(pd.DataFrame({"interval_start": idx})) == "Aug 27 – Sep 26, 2026"
+
+    def test_a_full_year_does_not_repeat_itself(self, monkeypatch):
+        import wattson.ui as ui
+
+        st.cache_data.clear()
+        year = SyntheticProvider(seed=11).fetch(
+            PriceRequest(settlement_point="LZ_WEST", start_date="2025-09-27", end_date="2026-09-26")
+        )
+        monkeypatch.setattr(ui, "_prices_cached", lambda *a, **k: year)
+        monkeypatch.setattr(ui, "_load_credentials", lambda: False)
+        app = AppTest.from_file(APP, default_timeout=300)
+        app.run()
+        assert not app.exception
+        text = (app.success or app.error)[0].value
+        assert "Over these 365 days (Sep 27, 2025 – Sep 26, 2026)" in text
+        assert "a year at this pace" not in text
+
+
+def test_worker_processes_do_not_rerun_the_app(monkeypatch):
+    """Parallel workers import the entry script as __mp_main__; it must stay inert."""
+    import importlib.util
+
+    import wattson.ui as ui
+
+    calls = []
+    monkeypatch.setattr(ui, "main", lambda: calls.append(1))
+    spec = importlib.util.spec_from_file_location("__mp_main__", APP)
+    spec.loader.exec_module(importlib.util.module_from_spec(spec))
+    assert calls == []

@@ -79,3 +79,37 @@ class TestRevenueFigures:
         daily = result.ledger.set_index("interval_start")["net_usd"].resample("D").sum()
         fig = daily_revenue_figure(result)
         assert len(fig.data[0].y) == len(daily)
+
+
+class TestZoneComparisonLabels:
+    @staticmethod
+    def _comparison(codes_and_values):
+        return pd.DataFrame(
+            {"usd_per_kw_year": [v for _, v in codes_and_values]},
+            index=pd.Index([c for c, _ in codes_and_values], name="settlement_point"),
+        )
+
+    def test_bars_are_labelled_with_place_names_not_codes(self):
+        from wattson.viz import zone_comparison_figure
+
+        fig = zone_comparison_figure(
+            self._comparison([("LZ_AEN", 4.4), ("LZ_WEST", 9.1), ("HB_PAN", -1.0)])
+        )
+        labels = list(fig.data[0].y)
+        assert "Austin Energy (Austin / Travis Co.)" in labels
+        assert "West Texas (Midland–Odessa)" in labels
+        assert "Texas Panhandle hub (Amarillo)" in labels
+        assert not any(label.startswith(("LZ_", "HB_")) for label in labels)
+
+    def test_the_code_is_still_in_the_hover(self):
+        from wattson.viz import zone_comparison_figure
+
+        fig = zone_comparison_figure(self._comparison([("LZ_AEN", 4.4), ("LZ_WEST", 9.1)]))
+        assert list(fig.data[0].customdata) == ["LZ_AEN", "LZ_WEST"]  # weakest first
+        assert "%{customdata}" in fig.data[0].hovertemplate
+
+    def test_an_unknown_code_is_shown_rather_than_dropped(self):
+        from wattson.viz import zone_comparison_figure
+
+        fig = zone_comparison_figure(self._comparison([("LZ_NEW", 1.0)]))
+        assert list(fig.data[0].y) == ["LZ_NEW"]
