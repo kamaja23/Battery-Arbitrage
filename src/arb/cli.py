@@ -17,9 +17,7 @@ from arb.config import COMMERCIAL_1MW, RESIDENTIAL_13KWH, BatteryConfig
 from arb.data.cache import cached_fetch
 from arb.data.ercot_source import ErcotLiveProvider, load_keys_file
 from arb.data.providers import PriceRequest
-from arb.metrics import compute_metrics
-from arb.sim.engine import run_backtest
-from arb.strategies.perfect_foresight import solve_perfect_foresight
+from arb.metrics import compare_strategies
 from arb.strategies.threshold import ThresholdStrategy
 
 DEFAULT_KEYS = "ERCOT API Keys.txt"
@@ -62,32 +60,28 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     prices = _load(args)
     _describe(prices, args)
 
-    series = prices.set_index("interval_start")["price_usd_per_mwh"]
-    strategy = ThresholdStrategy()
     batteries: tuple[BatteryConfig, ...] = (COMMERCIAL_1MW, RESIDENTIAL_13KWH)
-
-    rows = []
     for battery in batteries:
-        metrics = compute_metrics(run_backtest(prices, battery, strategy))
-        lp_net = solve_perfect_foresight(series, battery).net_usd
-        rows.append(
-            {
-                "battery": battery.name,
-                "net_usd": metrics.net_usd,
-                "after_degrad": metrics.net_after_degradation_usd,
-                "usd_per_kw_yr": metrics.usd_per_kw_year,
-                "lp_net_usd": lp_net,
-                "capture": metrics.net_usd / lp_net if lp_net else float("nan"),
-                "buy": metrics.avg_charge_price_usd_per_mwh,
-                "sell": metrics.avg_discharge_price_usd_per_mwh,
-                "cycles": metrics.equivalent_full_cycles,
-                "payback": metrics.payback_years,
-            }
-        )
+        frame = compare_strategies(prices, battery, ThresholdStrategy())
+        view = frame[
+            [
+                "net_usd",
+                "net_after_degradation_usd",
+                "usd_per_kw_year",
+                "equivalent_full_cycles",
+                "capture_ratio",
+                "payback_years",
+            ]
+        ]
+        with pd.option_context("display.width", 200):
+            print(f"\n{battery.name}  "
+                  f"({battery.capacity_kwh:,.0f} kWh / {battery.power_kw:,.0f} kW)")
+            print(view.round(2).to_string())
 
-    frame = pd.DataFrame(rows).set_index("battery")
-    with pd.option_context("display.width", 220):
-        print(frame.round(2).to_string())
+    print(
+        "\nWithout a battery there is no spread to capture, so the baseline is $0.\n"
+        "Perfect foresight sees every future price and is unreachable in practice."
+    )
     return 0
 
 

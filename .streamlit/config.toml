@@ -1,0 +1,11 @@
+# Streamlit settings shared by the container and a local run.
+#
+# Container-only settings (address, port, headless, file watching) are set as
+# environment variables in the Dockerfile, so a local `streamlit run app.py`
+# keeps binding to localhost and keeps hot reload.
+
+[browser]
+gatherUsageStats = false
+
+[runner]
+fastReruns = true

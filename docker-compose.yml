@@ -1,0 +1,53 @@
+# Host port 8502 is used deliberately:
+#   8501 is taken by the trading_llm container, and 8000 / 3000 / 54321-54323
+#   are reserved by the inactive Compli project. 8502 is free and sits next to
+#   Streamlit's default 8501. Container-side Streamlit stays on 8501.
+#
+# Published on all interfaces so the app is reachable over the home network
+# and the VPN, matching how every other container here is published.
+#
+# This does NOT expose it to the internet: the host is behind NAT and the
+# public IP is not on any interface, so reaching 136.49.158.113:8502 would
+# additionally require a router port forward. None exists for 8502, and
+# adding one would be the thing that makes it public.
+#
+# If the app should stay server-local only, use "127.0.0.1:8502:8501" and
+# reach it with:  ssh -L 8502:127.0.0.1:8502 andrei@192.168.0.171
+
+services:
+  arb-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: battery-arbitrage-ui:local
+    container_name: arb-ui
+    restart: unless-stopped
+    ports:
+      - "8502:8501"
+    environment:
+      # cache.py derives a bad default from site-packages, so set it explicitly
+      ARB_CACHE_DIR: /data/cache
+    volumes:
+      # Read-only credentials. The file is 644 on the host, so the container's
+      # unprivileged user can read it but cannot modify it.
+      - ./ERCOT API Keys.txt:/app/ERCOT API Keys.txt:ro
+      # Named volume so cached ERCOT prices survive rebuilds. Not a bind mount
+      # on purpose: the host data/ dir is uid 1000 and the container runs as
+      # 10001, which would not be able to write.
+      - arb-cache:/data/cache
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import os, sys, urllib.request
+          url = "http://127.0.0.1:" + os.environ.get("STREAMLIT_SERVER_PORT", "8501") + "/_stcore/health"
+          sys.exit(0 if urllib.request.urlopen(url, timeout=4).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+
+volumes:
+  arb-cache:

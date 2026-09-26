@@ -1,0 +1,35 @@
+# Build context hygiene: keep the image small and keep secrets out of it.
+.git
+.gitignore
+.github
+
+# Virtualenvs and build noise
+.venv
+venv
+*.egg-info
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Cached price data and generated output are mounted or rebuilt at runtime
+data/cache
+outputs
+*.html
+*.csv
+*.parquet
+
+# Never bake credentials or the source framework into the image
+.env
+.env.*
+ERCOT API Keys.txt
+*keys*.txt
+*secret*
+battery-arbitrage-framework.pdf
+
+# Not needed to run the app
+tests
+scripts
+README.md

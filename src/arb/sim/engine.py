@@ -71,6 +71,28 @@ def prepare_price_series(
     return series[~series.index.duplicated(keep="first")]
 
 
+def _resolve_market(
+    prices: pd.DataFrame, requested: str, settlement_point: str
+) -> str:
+    """Return the market actually available for ``settlement_point``.
+
+    ``EngineConfig`` defaults to RTM, so a frame holding only DAM rows would
+    otherwise look empty. Callers fetch one market at a time, so when the
+    requested market is absent and exactly one is present, use that one.
+    """
+    at_point = set(
+        prices.loc[prices["settlement_point"] == settlement_point, "market"]
+    )
+    if requested in at_point:
+        return requested
+    if len(at_point) == 1:
+        return str(next(iter(at_point)))
+    present = sorted(prices["market"].unique())
+    raise ValueError(
+        f"no {requested} rows for {settlement_point!r}; available: {present}"
+    )
+
+
 def run_backtest(
     prices: pd.DataFrame,
     battery: BatteryConfig,
@@ -89,12 +111,13 @@ def run_backtest(
             )
         settlement_point = points[0]
 
-    series = prepare_price_series(prices, engine.market, settlement_point)
+    market = _resolve_market(prices, engine.market, settlement_point)
+    series = prepare_price_series(prices, market, settlement_point)
     timestamps = pd.DatetimeIndex(series.index)
     values = series.to_numpy(dtype=float)
 
     durations = pd.Series(timestamps, index=series.index).diff()
-    default_hours = 1.0 if engine.market == "DAM" else 0.25
+    default_hours = 1.0 if market == "DAM" else 0.25
     modal = durations.mode()
     step = (
         pd.Timedelta(hours=default_hours)
@@ -156,6 +179,6 @@ def run_backtest(
         ledger=ledger,
         battery=battery,
         strategy_name=strategy.name,
-        market=engine.market,
+        market=market,
         settlement_point=settlement_point,
     )
