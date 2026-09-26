@@ -17,10 +17,13 @@ from arb.config import COMMERCIAL_1MW, RESIDENTIAL_13KWH, BatteryConfig
 from arb.data.cache import cached_fetch
 from arb.data.ercot_source import ErcotLiveProvider, load_keys_file
 from arb.data.providers import PriceRequest
-from arb.metrics import compare_strategies
+from arb.metrics import compare_strategies, compare_zones
+from arb.zones import HUBS, LOAD_ZONES, label_for
 from arb.strategies.threshold import ThresholdStrategy
 
 DEFAULT_KEYS = "ERCOT API Keys.txt"
+
+
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
@@ -81,6 +84,56 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     print(
         "\nWithout a battery there is no spread to capture, so the baseline is $0.\n"
         "Perfect foresight sees every future price and is unreachable in practice."
+    )
+    return 0
+
+
+def cmd_compare_zones(args: argparse.Namespace) -> int:
+    load_keys_file(args.keys)
+    targets = list(LOAD_ZONES) + (list(HUBS) if args.hubs else [])
+
+    frames: dict[str, pd.DataFrame] = {}
+    skipped: list[str] = []
+    for target in targets:
+        request = PriceRequest(
+            settlement_point=target,
+            start_date=args.start,
+            end_date=args.end,
+            market=args.market,
+        )
+        try:
+            frames[target] = cached_fetch(ErcotLiveProvider(), request)
+        except Exception as exc:  # noqa: BLE001 - one bad zone must not stop the rest
+            skipped.append(f"{target} ({type(exc).__name__})")
+
+    if not frames:
+        print(f"no prices available for {args.market} {args.start}..{args.end}")
+        return 1
+
+    battery = COMMERCIAL_1MW if args.commercial else RESIDENTIAL_13KWH
+    table = compare_zones(frames, battery, ThresholdStrategy())
+    view = table[
+        [
+            "net_usd",
+            "net_after_degradation_usd",
+            "usd_per_kw_year",
+            "equivalent_full_cycles",
+            "mean_price_usd_per_mwh",
+            "p95_price_usd_per_mwh",
+            "intervals",
+        ]
+    ]
+    print(
+        f"{battery.name}  {args.market}  {args.start}..{args.end}  "
+        f"({len(table)} locations)\n"
+    )
+    with pd.option_context("display.width", 200):
+        print(view.round(2).to_string())
+    if skipped:
+        print("\nskipped: " + ", ".join(skipped))
+    print(
+        "\nAnnualized from this window only; not a forecast. Locations are "
+        "ranked by revenue per kW-year."
     )
     return 0
 
@@ -149,6 +202,16 @@ def main(argv: list[str] | None = None) -> int:
     verify = sub.add_parser("verify-data", help="check live data against ERCOT rules")
     _add_common(verify)
     verify.set_defaults(func=cmd_verify)
+
+    zones = sub.add_parser(
+        "compare-zones", help="compare one battery across every load zone"
+    )
+    _add_common(zones)
+    zones.add_argument("--hubs", action="store_true", help="include hubs too")
+    zones.add_argument(
+        "--commercial", action="store_true", help="use the 1 MW / 2 MWh battery"
+    )
+    zones.set_defaults(func=cmd_compare_zones)
 
     args = parser.parse_args(argv)
     return int(args.func(args))

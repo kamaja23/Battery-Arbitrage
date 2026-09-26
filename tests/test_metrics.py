@@ -164,3 +164,56 @@ def _synthetic_dam_prices() -> pd.DataFrame:
             "price_usd_per_mwh": values,
         }
     )
+
+
+def test_compare_zones_ranks_by_return_across_locations() -> None:
+    """The same battery is compared across locations on identical inputs.
+
+    A zone with deeper price swings must outrank a calm one, and every row
+    must carry the same market so the comparison is apples to apples. A week
+    is used because the rolling threshold needs history before it trades.
+    """
+    import numpy as np
+
+    from arb.config import CENTRAL_TIME
+    from arb.metrics import compare_zones
+
+    def frame(sp: str, swing: float) -> pd.DataFrame:
+        index = pd.date_range(
+            "2026-06-01", periods=672, freq="15min", tz=CENTRAL_TIME
+        )
+        phase = np.arange(672) / 96 * 2 * np.pi
+        values = 25 + swing * np.sin(phase) + 8 * np.sin(phase * 7)
+        return pd.DataFrame(
+            {
+                "interval_start": index,
+                "interval_end": index + pd.Timedelta(minutes=15),
+                "market": "RTM",
+                "settlement_point": sp,
+                "location_type": "Load Zone",
+                "price_usd_per_mwh": values,
+            }
+        )
+
+    frames = {
+        "LZ_CALM": frame("LZ_CALM", 2.0),
+        "LZ_VOLATILE": frame("LZ_VOLATILE", 40.0),
+    }
+    out = compare_zones(frames, COMMERCIAL_1MW, ThresholdStrategy())
+
+    assert list(out.index) == ["LZ_VOLATILE", "LZ_CALM"]
+    assert set(out["market"]) == {"RTM"}
+    assert (out["intervals"] == 672).all()
+    assert out.loc["LZ_VOLATILE", "net_usd"] > out.loc["LZ_CALM", "net_usd"]
+    assert (
+        out.loc["LZ_VOLATILE", "p95_price_usd_per_mwh"]
+        > out.loc["LZ_CALM", "p95_price_usd_per_mwh"]
+    )
+
+
+def test_compare_zones_handles_no_input() -> None:
+    from arb.metrics import compare_zones
+
+    out = compare_zones({}, COMMERCIAL_1MW, ThresholdStrategy())
+
+    assert out.empty

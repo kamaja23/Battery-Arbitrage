@@ -7,6 +7,7 @@ reported alongside it for completeness.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 
 import pandas as pd
@@ -274,3 +275,47 @@ def compare_strategies(
         )
 
     return pd.DataFrame(rows).set_index("strategy")
+
+
+def compare_zones(
+    frames: Mapping[str, pd.DataFrame],
+    battery: BatteryConfig,
+    strategy: Strategy,
+) -> pd.DataFrame:
+    """Run one strategy across several load zones, one row per zone.
+
+    ``frames`` maps a settlement point to its price frame. Zones are compared
+    on the same battery, window, and market so the differences come from the
+    price shape alone.
+    """
+    from arb.sim.engine import run_backtest
+
+    rows: list[dict[str, object]] = []
+    for zone, frame in frames.items():
+        result = run_backtest(frame, battery, strategy)
+        m = compute_metrics(result)
+        rows.append(
+            {
+                "settlement_point": zone,
+                "market": m.market,
+                "intervals": int(len(result.ledger)),
+                "days": m.duration_days,
+                "net_usd": m.net_usd,
+                "net_after_degradation_usd": m.net_after_degradation_usd,
+                "usd_per_kw_year": m.usd_per_kw_year,
+                "equivalent_full_cycles": m.equivalent_full_cycles,
+                "mean_price_usd_per_mwh": float(
+                    frame["price_usd_per_mwh"].mean()
+                ),
+                "p95_price_usd_per_mwh": float(
+                    frame["price_usd_per_mwh"].quantile(0.95)
+                ),
+                "payback_years": m.payback_years,
+            }
+        )
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    return out.sort_values("usd_per_kw_year", ascending=False).set_index(
+        "settlement_point"
+    )

@@ -105,7 +105,35 @@ COMMERCIAL_1MW = BatteryConfig(
     installed_cost_usd=960_000.0,
 )
 
+# Base Power's home batteries. Capacity and inverter rating are Base's
+# published figures (basepowercompany.com/specs and Base's help center: 25,
+# 39.2 and 50 kWh systems on an 11 kW inverter). Base does not publish
+# round-trip efficiency, usable SOC window, or cycle life, so those use the
+# same LFP assumptions as the generic presets above. Base owns the battery and
+# prices vary by address, so no installed cost is assumed.
+_BASE_LFP = dict(
+    round_trip_efficiency=0.90,
+    soc_min=0.10,
+    soc_max=0.95,
+    degradation_cost_per_kwh=0.012,
+    installed_cost_usd=None,
+)
+
+BASE_CORE = BatteryConfig(name="base_core", capacity_kwh=39.2, power_kw=11.0, **_BASE_LFP)
+# Dual Core capacity is published (78.4 kWh). Its power rating is not; two
+# 11 kW inverters is an assumption.
+BASE_CORE_DUAL = BatteryConfig(
+    name="base_core_dual", capacity_kwh=78.4, power_kw=22.0, **_BASE_LFP
+)
+BASE_GROUND_25 = BatteryConfig(
+    name="base_ground_25kwh", capacity_kwh=25.0, power_kw=11.0, **_BASE_LFP
+)
+BASE_GROUND_50 = BatteryConfig(
+    name="base_ground_50kwh", capacity_kwh=50.0, power_kw=11.0, **_BASE_LFP
+)
+
+# The app offers only Base's products. The generic presets above stay defined
+# because the CLI and the test suite use them as fixed reference batteries.
 PRESETS: dict[str, BatteryConfig] = {
-    RESIDENTIAL_13KWH.name: RESIDENTIAL_13KWH,
-    COMMERCIAL_1MW.name: COMMERCIAL_1MW,
+    b.name: b for b in (BASE_CORE, BASE_CORE_DUAL, BASE_GROUND_25, BASE_GROUND_50)
 }

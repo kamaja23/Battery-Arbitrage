@@ -78,17 +78,46 @@ class TestRenders:
 
 
 class TestInteraction:
-    def test_switching_to_the_commercial_preset_changes_the_result(self, offline_ui):
+    def test_switching_base_models_changes_the_result(self, offline_ui):
         offline_ui.run()
-        residential = offline_ui.metric[0].value
-        offline_ui.selectbox[1].set_value("commercial_1mw").run()
-        commercial = offline_ui.metric[0].value
-        assert residential != commercial
+        core = offline_ui.metric[0].value
+        offline_ui.selectbox[1].set_value("base_core_dual").run()
+        dual = offline_ui.metric[0].value
+        assert core != dual
 
-    def test_the_commercial_run_does_not_error(self, offline_ui):
+    def test_every_base_model_runs_without_error(self, offline_ui):
+        from arb.config import PRESETS
+
         offline_ui.run()
-        offline_ui.selectbox[1].set_value("commercial_1mw").run()
+        for key in PRESETS:
+            offline_ui.selectbox[1].set_value(key).run()
+            assert not offline_ui.exception, key
+
+    def test_the_compare_view_runs(self, offline_ui):
+        offline_ui.run()
+        offline_ui.radio[0].set_value("Compare zones").run()
         assert not offline_ui.exception
+        assert offline_ui.success
+
+
+class TestDemoDefaults:
+    def test_it_opens_on_austin_energy(self, offline_ui):
+        from arb.zones import label_for
+
+        offline_ui.run()
+        assert offline_ui.selectbox[0].value == "LZ_AEN"
+        assert "Austin Energy" in label_for(offline_ui.selectbox[0].value)
+
+    def test_it_offers_only_base_batteries(self, offline_ui):
+        offline_ui.run()
+        options = offline_ui.selectbox[1].options
+        assert options and all(o.startswith("Base ") for o in options)
+        assert offline_ui.selectbox[1].value == "base_core"
+
+    def test_payback_is_not_claimed_without_a_price(self, offline_ui):
+        offline_ui.run()
+        payback = next(m for m in offline_ui.metric if m.label == "Payback")
+        assert payback.value == "n/a"
 
 
 class TestFailureHandling:
@@ -102,3 +131,66 @@ class TestFailureHandling:
         offline_ui.run()
         assert not offline_ui.exception
         assert any("Could not load prices" in e.value for e in offline_ui.error)
+
+
+class TestCachedPricesWithoutCredentials:
+    """A seeded cache should be enough to run, even with no API access."""
+
+    def test_it_serves_cached_prices_when_credentials_are_missing(
+        self, monkeypatch, tmp_path
+    ):
+        import arb.data.cache as cache
+        import arb.ui as ui
+
+        request = PriceRequest(
+            settlement_point="LZ_WEST",
+            start_date="2026-06-01",
+            end_date="2026-06-14",
+        )
+        expected = SyntheticProvider(seed=3).fetch(request)
+        monkeypatch.setattr(cache, "DEFAULT_CACHE_DIR", tmp_path)
+        cache.save(request, expected, tmp_path)
+
+        monkeypatch.setattr(ui, "load", cache.load)
+        got = ui._prices_cached.__wrapped__(
+            "LZ_WEST", "2026-06-01", "2026-06-14", "RTM", False
+        )
+        assert len(got) == len(expected)
+        assert got["price_usd_per_mwh"].abs().sum() == pytest.approx(
+            expected["price_usd_per_mwh"].abs().sum()
+        )
+
+    def test_it_explains_itself_when_there_is_neither_cache_nor_credentials(
+        self, monkeypatch, tmp_path
+    ):
+        import arb.data.cache as cache
+        import arb.ui as ui
+
+        monkeypatch.setattr(cache, "DEFAULT_CACHE_DIR", tmp_path)
+        monkeypatch.setattr(ui, "load", cache.load)
+        with pytest.raises(RuntimeError) as excinfo:
+            ui._prices_cached.__wrapped__(
+                "LZ_WEST", "2026-06-01", "2026-06-14", "RTM", False
+            )
+        message = str(excinfo.value)
+        assert "no cached RTM prices" in message
+        assert "LZ_WEST" in message
+        assert "credentials" in message
+
+
+class TestLocationLabels:
+    def test_the_zone_selector_offers_readable_names(self, offline_ui):
+        from arb.zones import LOAD_ZONES, label_for
+
+        offline_ui.run()
+        options = offline_ui.selectbox[0].options
+        # The widget renders the readable name, not the bare code.
+        assert set(options) == {label_for(code) for code in LOAD_ZONES}
+        # ...but the raw code stays visible for traceability.
+        assert all(code in " ".join(options) for code in LOAD_ZONES)
+
+    def test_the_selector_warns_that_zones_follow_the_utility(self, offline_ui):
+        offline_ui.run()
+        help_text = offline_ui.selectbox[0].help or ""
+        assert "service territory" in help_text
+

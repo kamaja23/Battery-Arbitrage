@@ -17,22 +17,20 @@ import pandas as pd
 import streamlit as st
 
 from arb.config import PRESETS, BatteryConfig
-from arb.data.cache import cached_fetch
+from arb.data.cache import cached_fetch, load
 from arb.data.ercot_source import ErcotLiveProvider, load_keys_file
 from arb.data.providers import PriceRequest
-from arb.metrics import compute_metrics, compare_strategies
+from arb.metrics import compare_strategies, compare_zones, compute_metrics
 from arb.sim.engine import run_backtest
 from arb.strategies.threshold import ThresholdStrategy
-from arb.viz import cumulative_revenue_figure, daily_revenue_figure, dispatch_figure
-
-LOAD_ZONES = (
-    "LZ_HOUSTON",
-    "LZ_NORTH",
-    "LZ_WEST",
-    "LZ_CENTRAL",
-    "LZ_SOUTH",
-    "LZ_EAST",
+from arb.viz import (
+    cumulative_revenue_figure,
+    daily_revenue_figure,
+    dispatch_figure,
+    zone_comparison_figure,
 )
+from arb.zones import HUBS, LOAD_ZONES, label_for
+
 
 # Intertrust's published range for optimized pure RTM arbitrage, used only as
 # a reference point for what a well-run commercial fleet actually achieves.
@@ -40,9 +38,13 @@ BENCHMARK_LOW = 55.0
 BENCHMARK_HIGH = 66.0
 
 PRESET_LABELS = {
-    "residential_13kwh": "Residential 13.5 kWh (typical home)",
-    "commercial_1mw": "Commercial 1 MW / 2 MWh (fleet scale)",
+    "base_core": "Base Core · 39.2 kWh / 11 kW",
+    "base_core_dual": "Base Core, two units · 78.4 kWh / 22 kW",
+    "base_ground_25kwh": "Base ground-mounted · 25 kWh / 11 kW",
+    "base_ground_50kwh": "Base ground-mounted, double · 50 kWh / 11 kW",
 }
+
+DEFAULT_ZONE = "LZ_AEN"
 
 
 def _load_credentials() -> bool:
@@ -57,11 +59,17 @@ def _load_credentials() -> bool:
 def _prices_cached(
     zone: str, start: str, end: str, market: str, ready: bool
 ) -> pd.DataFrame:
-    if not ready:
-        raise RuntimeError("credentials unavailable")
     request = PriceRequest(
         settlement_point=zone, start_date=start, end_date=end, market=market
     )
+    hit = load(request)
+    if hit is not None:
+        return hit
+    if not ready:
+        raise RuntimeError(
+            f"no cached {market} prices for {label_for(zone)} covering {start}..{end}, "
+            "and no API credentials to fetch them"
+        )
     return cached_fetch(ErcotLiveProvider(), request)
 
 
@@ -71,28 +79,44 @@ def _money(value: float, decimals: int = 0) -> str:
     return f"{sign}${abs(value):,.{decimals}f}"
 
 
-def _metrics_row(metrics, title: str) -> None:
+def _metrics_row(metrics, title: str, has_cost: bool = True) -> None:
     cols = st.columns(4)
     cols[0].metric("Net earned", _money(metrics.net_usd))
     cols[1].metric("After degradation", _money(metrics.net_after_degradation_usd))
     cols[2].metric("Per kW / year", _money(metrics.usd_per_kw_year, 2))
     payback = metrics.payback_years
-    cols[3].metric(
-        "Payback",
-        "never" if payback is None else f"{payback:,.0f} yr",
-    )
+    if not has_cost:
+        cols[3].metric(
+            "Payback", "n/a",
+            help="Base owns the battery and pricing varies by address, so no "
+                 "purchase price is assumed. Use 'Customize size' to enter one.",
+        )
+    else:
+        cols[3].metric(
+            "Payback",
+            "never" if payback is None else f"{payback:,.0f} yr",
+        )
     st.caption(title)
 
 
 def main() -> None:
     st.set_page_config(page_title="ERCOT Battery Arbitrage", layout="wide")
-    st.title("Would a battery pay for itself in your ERCOT zone?")
+    st.title("Would a Base battery pay for itself in your ERCOT zone?")
 
     credentials_ready = _load_credentials()
 
     with st.sidebar:
         st.header("Your setup")
-        zone = st.selectbox("Load zone", LOAD_ZONES, index=2)
+        view = st.radio("View", ["Your zone", "Compare zones"], horizontal=True)
+        zone = st.selectbox(
+            "Load zone",
+            LOAD_ZONES,
+            index=LOAD_ZONES.index(DEFAULT_ZONE),
+            format_func=label_for,
+            help="A load zone follows your utility's service territory, not your "
+                 "address. Most of Austin is priced in LZ_SOUTH; only Austin "
+                 "Energy's own customers are in LZ_AEN.",
+        )
         market = st.radio("Price market", ["RTM", "DAM"], horizontal=True)
 
         preset_key = st.selectbox(
@@ -143,11 +167,15 @@ def main() -> None:
         return
     start, end = window[0].isoformat(), window[1].isoformat()
 
+    if view == "Compare zones":
+        _zone_comparison(start, end, market, battery, credentials_ready)
+        return
+
     try:
         with st.spinner("Loading prices..."):
             prices = _prices_cached(zone, start, end, market, credentials_ready)
     except Exception as exc:  # noqa: BLE001 - surface any data problem in the UI
-        st.error(f"Could not load prices for {zone} {start}..{end}: {exc}")
+        st.error(f"Could not load prices for {label_for(zone)} {start}..{end}: {exc}")
         return
 
     result = run_backtest(prices, battery, ThresholdStrategy())
@@ -160,7 +188,7 @@ def main() -> None:
     )
     p = prices["price_usd_per_mwh"]
     st.caption(
-        f"{zone} {market} · {len(prices):,} intervals · {span} · "
+        f"{label_for(zone)} {market} · {len(prices):,} intervals · {span} · "
         f"price ${p.min():,.2f} to ${p.max():,.2f}/MWh · "
         f"{(p < 0).sum():,} negative-price intervals"
     )
@@ -180,7 +208,8 @@ def main() -> None:
     _metrics_row(
         metrics,
         f"Annualized from this window only. Battery: {battery.name}, "
-        f"{battery.capacity_kwh:,.0f} kWh / {battery.power_kw:,.0f} kW.",
+        f"{battery.capacity_kwh:,.1f} kWh / {battery.power_kw:,.0f} kW.",
+        has_cost=bool(battery.installed_cost_usd),
     )
 
     st.subheader("How that compares")
@@ -222,7 +251,7 @@ def main() -> None:
 
     st.subheader("Buying low, selling high")
     st.plotly_chart(
-        dispatch_figure(result, f"{zone} dispatch"),
+        dispatch_figure(result, f"{label_for(zone)} dispatch"),
         width='stretch',
     )
 
@@ -257,4 +286,82 @@ def main() -> None:
         "This model covers energy-only arbitrage: it does not value demand "
         "charge savings, solar self-consumption, or backup power, which are "
         "usually what make a home battery worth owning."
+    )
+
+
+def _zone_comparison(
+    start: str,
+    end: str,
+    market: str,
+    battery,
+    credentials_ready: bool,
+) -> None:
+    """Compare the same battery across every load zone that has data."""
+    st.subheader("Same battery, every zone")
+    include_hubs = st.checkbox(
+        "Include hubs as well as load zones", value=False,
+        help="Hubs average across a wider footprint and are not a residential option.",
+    )
+    targets = list(LOAD_ZONES) + list(HUBS) if include_hubs else list(LOAD_ZONES)
+    st.caption(
+        f"{market} · {start} to {end} · {battery.name}. Locations with no "
+        "cached prices for this window are skipped."
+    )
+
+    frames: dict[str, pd.DataFrame] = {}
+    skipped: list[str] = []
+    progress = st.progress(0.0, text="Loading zones...")
+    for i, candidate in enumerate(targets, start=1):
+        try:
+            frames[candidate] = _prices_cached(
+                candidate, start, end, market, credentials_ready
+            )
+        except Exception:  # noqa: BLE001 - a missing zone must not break the rest
+            skipped.append(candidate)
+        progress.progress(i / len(targets), text=f"Loaded {label_for(candidate)}")
+
+    if not frames:
+        st.error(
+            f"No location had cached {market} prices for {start}..{end}. "
+            "Try a window that has been fetched, or pull it with the CLI."
+        )
+        return
+
+    with st.spinner("Backtesting each zone..."):
+        comparison = compare_zones(frames, battery, ThresholdStrategy())
+
+    best = comparison.index[0]
+    st.success(
+        f"**{label_for(best)}** is the strongest zone in this window at "
+        f"{_money(comparison.iloc[0]['usd_per_kw_year'], 2)}/kW-year."
+    )
+
+    st.plotly_chart(zone_comparison_figure(comparison), width='stretch')
+
+    table = comparison[
+        [
+            "net_usd",
+            "net_after_degradation_usd",
+            "usd_per_kw_year",
+            "equivalent_full_cycles",
+            "mean_price_usd_per_mwh",
+            "p95_price_usd_per_mwh",
+            "intervals",
+            "days",
+        ]
+    ].round(2)
+    table.insert(0, "location", [label_for(code) for code in table.index])
+    table.index.name = "settlement_point"
+    st.dataframe(table, width='stretch')
+
+    if skipped:
+        st.caption(
+            "No cached prices for: "
+            + ", ".join(label_for(code) for code in skipped)
+            + ". Fetch them with `arb fetch` to include them here."
+        )
+    st.caption(
+        "Annualized from this historical window only. Not a forecast, and it "
+        "assumes a battery that cycles freely rather than one held back for "
+        "backup or resilience."
     )

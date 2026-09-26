@@ -203,6 +203,7 @@ def _daily_interval_ends(
     for day in day_labels.unique():
         on_day = day_labels == day
         day_hours = hours[on_day]
+        n_rows = int(on_day.sum())
         counts = day_hours.value_counts()
         repeated = sorted(h for h, n in counts.items() if n > per_hour_expected)
         present = set(counts.index)
@@ -215,7 +216,13 @@ def _daily_interval_ends(
                 h for h in range(int(min(present)), int(max(present)) + 1)
                 if h not in present
             ]
-            shift = -60 * (day_hours > missing[-1]) if missing else 0
+            # Only a full-length day that is short by exactly one hour ending
+            # 2 or 3 can be a spring-forward day. A truncated or gappy day is a
+            # data gap, and treating it as a transition would shift every hour
+            # after the gap by an hour and mislabel the rest of the day.
+            short_by_one = n_rows == 24 * per_hour_expected - per_hour_expected
+            is_dst_hour = len(missing) == 1 and missing[0] in (2, 3)
+            shift = -60 * (day_hours > missing[0]) if short_by_one and is_dst_hour else 0
 
         midnight = pd.Timestamp(str(day)[:10]).tz_localize(CENTRAL_TIME)
         offsets = (minutes[on_day] + shift).to_numpy()
@@ -320,6 +327,28 @@ class ErcotLiveProvider(PriceSeriesProvider):
                     "the API returned only other settlement point types"
                 )
 
+        # Collapse echoed rows before the DST analysis below. An echo adds an
+        # extra interval to an hour, which would make that hour look repeated
+        # and trigger a false fall-back shift that runs into the next day.
+        # repeat_hour stays in the key so a genuine DST repeated hour, which
+        # carries a different repeat_hour, is preserved.
+        key_cols = (
+            ["delivery_date", "hour_ending", "interval", "repeat_hour"]
+            if request.market == "RTM"
+            else ["delivery_date", "hour_ending", "repeat_hour"]
+        )
+        echoed = frame.duplicated(subset=key_cols, keep=False)
+        if echoed.any():
+            conflicting = frame.loc[echoed].groupby(key_cols)[
+                "price_usd_per_mwh"
+            ].nunique()
+            if (conflicting > 1).any():
+                bad = conflicting[conflicting > 1].index.tolist()[:3]
+                raise ValueError(
+                    f"conflicting prices for repeated intervals at {bad}"
+                )
+            frame = frame.drop_duplicates(subset=key_cols, keep="first")
+
         step = pd.Timedelta(hours=1 if request.market == "DAM" else 0.25)
         if request.market == "RTM":
             frame = frame.sort_values(
@@ -344,8 +373,20 @@ class ErcotLiveProvider(PriceSeriesProvider):
         )
         out = out.sort_values("interval_start").reset_index(drop=True)
         if out["interval_start"].duplicated().any():
-            dupes = int(out["interval_start"].duplicated().sum())
-            raise ValueError(f"constructed {dupes} duplicate timestamps")
+            # ERCOT occasionally echoes a row for a settlement point. Echoes
+            # agree on price and are safe to collapse; genuine disagreements
+            # are a real data conflict and must not be resolved silently.
+            repeated = out["interval_start"].duplicated(keep=False)
+            conflicting = out.loc[repeated].groupby("interval_start")[
+                "price_usd_per_mwh"
+            ].nunique()
+            if (conflicting > 1).any():
+                bad = conflicting[conflicting > 1].index.tolist()[:5]
+                raise ValueError(
+                    f"conflicting prices for duplicate intervals at {bad}"
+                )
+            out = out[~out["interval_start"].duplicated(keep="first")]
+            out = out.reset_index(drop=True)
         return validate_price_frame(out)
 
     @staticmethod

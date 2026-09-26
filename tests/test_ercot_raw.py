@@ -245,3 +245,106 @@ class TestLocationTypes:
         )
         assert set(out["location_type"]) == {"Hub"}
         assert len(out) == 96
+
+
+class TestEchoedRows:
+    """ERCOT sometimes returns a row twice for a settlement point.
+
+    A live May 2026 pull showed 2026-05-01 echoing (hour 9, interval 1) with an
+    identical price. The echo pushed that hour to five intervals, which the DST
+    pass read as a fall-back repeat and shifted hours 9-24 forward by an hour,
+    colliding with the next day and raising a price conflict.
+    """
+
+    def test_an_echo_is_collapsed_to_one_row(self):
+        raw = raw_rtm("2026-05-01", types=("LZ",))
+        echoed = pd.concat([raw, raw.iloc[[0]]], ignore_index=True)
+
+        out = ErcotLiveProvider.from_raw(echoed, request_for("RTM"))
+
+        assert len(out) == 96
+        assert out["interval_start"].is_unique
+
+    def test_an_echo_does_not_shift_later_hours(self):
+        raw = raw_rtm("2026-05-01", types=("LZ",))
+        echoed = pd.concat([raw, raw.iloc[[0]]], ignore_index=True)
+
+        out = ErcotLiveProvider.from_raw(echoed, request_for("RTM"))
+
+        hour_nine = out[out["interval_start"].dt.hour == 8]
+        assert not hour_nine.empty
+        assert len(hour_nine) == 4
+        # The echo made hour 9 look repeated, which previously triggered a
+        # fall-back shift and pushed hours 9-24 an hour late, spilling the day
+        # past midnight. A normal day spans 23h45m start to start.
+        span = out["interval_start"].max() - out["interval_start"].min()
+        assert span == pd.Timedelta(hours=23, minutes=45)
+        assert out["interval_start"].dt.date.nunique() == 1
+
+    def test_a_genuine_dst_repeat_survives_the_echo_pass(self):
+        raw = raw_rtm("2026-11-01", repeated_hour=2, types=("LZ",))
+
+        out = ErcotLiveProvider.from_raw(raw, request_for("RTM"))
+
+        assert len(out) == 100
+        assert out["interval_start"].is_unique
+
+    def test_echoes_that_disagree_on_price_are_rejected(self):
+        raw = raw_rtm("2026-05-01", types=("LZ",))
+        clash = raw.iloc[[0]].copy()
+        clash[5] = 99.0
+        echo = pd.concat([raw, clash], ignore_index=True)
+
+        with pytest.raises(ValueError, match="conflicting prices"):
+            ErcotLiveProvider.from_raw(echo, request_for("RTM"))
+
+
+class TestPartialDays:
+    """A truncated day must not be read as a spring-forward transition.
+
+    Treating any missing hour as a transition would shift every hour after the
+    gap by -60 minutes and mislabel the rest of the day.
+    """
+
+    def test_a_day_missing_a_midday_hour_is_not_shifted(self):
+        # 92 rows, short by exactly one hour, but the gap is hour 12. Only
+        # hour endings 2 and 3 are plausible DST gaps.
+        raw = raw_rtm("2026-05-02", types=("LZ",))
+        holed = raw[raw[1] != 12].reset_index(drop=True)
+        assert len(holed) == 92
+
+        out = ErcotLiveProvider.from_raw(holed, request_for("RTM"))
+
+        assert len(out) == 92
+        assert out["interval_start"].is_unique
+        # hour ending 13 must still start at 12:00, not 11:00
+        at_12 = out[out["interval_start"].dt.hour == 12]
+        assert len(at_12) == 4
+        # a shift would drag hours 13-24 back and fill the 11:00 hour
+        at_11 = out[out["interval_start"].dt.hour == 11]
+        assert len(at_11) == 0
+
+    def test_a_day_missing_one_interval_is_not_shifted(self):
+        raw = raw_rtm("2026-05-02", types=("LZ",))
+        gappy = raw[~((raw[1] == 20) & (raw[2] == 3))].reset_index(drop=True)
+
+        out = ErcotLiveProvider.from_raw(gappy, request_for("RTM"))
+
+        assert len(out) == 95
+        assert out["interval_start"].is_unique
+        at_19 = out[out["interval_start"].dt.hour == 19]
+        assert len(at_19) == 3
+        assert sorted(at_19["interval_start"].dt.minute) == [0, 15, 45]
+
+    def test_a_real_spring_forward_day_is_still_shifted(self):
+        raw = raw_rtm("2026-03-08", hours=SPRING_HOURS, types=("LZ",))
+        assert len(raw) == 92
+
+        out = ErcotLiveProvider.from_raw(raw, request_for("RTM"))
+
+        assert len(out) == 92
+        assert out["interval_start"].is_unique
+        # hour ending 3 is absent, so local 02:00-03:00 does not exist
+        assert out["interval_start"].min().hour == 0
+        assert not (out["interval_start"].dt.hour == 2).any()
+        assert len(out[out["interval_start"].dt.hour == 3]) == 4

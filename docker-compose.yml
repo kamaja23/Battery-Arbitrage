@@ -35,6 +35,11 @@ services:
       # on purpose: the host data/ dir is uid 1000 and the container runs as
       # 10001, which would not be able to write.
       - arb-cache:/data/cache
+    # Seed the volume once after pulling or building, so the demo does not
+    # depend on live API calls (the public API rate limits aggressively):
+    #   VOL=$(docker volume ls -q | grep arb-cache)
+    #   docker run --rm -v "$VOL":/dst -v "$PWD/data/cache":/src:ro \
+    #     alpine sh -c 'cp -n /src/*.csv /dst/'
     healthcheck:
       test:
         - CMD

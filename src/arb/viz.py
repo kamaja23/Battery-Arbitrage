@@ -161,3 +161,34 @@ def daily_revenue_figure(result: BacktestResult) -> go.Figure:
         yaxis_title="USD",
     )
     return fig
+
+
+def zone_comparison_figure(comparison: pd.DataFrame) -> go.Figure:
+    """Annualized revenue per zone, weakest at the bottom.
+
+    Zones are ordered so the reader sees the ranking immediately, and a zero
+    line marks where a zone stops being profitable.
+    """
+    ordered = comparison.sort_values("usd_per_kw_year", ascending=True)
+    colors = [
+        _CHARGE_COLOR if v > 0 else _DISCHARGE_COLOR
+        for v in ordered["usd_per_kw_year"]
+    ]
+    fig = go.Figure(
+        go.Bar(
+            x=ordered["usd_per_kw_year"],
+            y=ordered.index,
+            orientation="h",
+            marker=dict(color=colors),
+            hovertemplate="%{y}<br>$%{x:,.2f} / kW-year<extra></extra>",
+        )
+    )
+    fig.add_vline(x=0, line=dict(color="#666", width=1))
+    fig.update_layout(
+        title="Annualized revenue per zone (same battery, same window)",
+        height=340,
+        margin=dict(l=110, r=40, t=60, b=40),
+        xaxis_title="USD / kW-year",
+        showlegend=False,
+    )
+    return fig
