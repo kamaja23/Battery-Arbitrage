@@ -39,13 +39,13 @@ class TestOffline:
         assert "forecast" in out
         assert "Austin Energy" in out
 
-    def test_one_battery_can_be_chosen(self, seeded_cache, capsys):
+    def test_the_number_of_cores_can_be_chosen(self, seeded_cache, capsys):
         code, out, _ = _run(
             capsys, "backtest", "--zone", "LZ_AEN", "--start", "2026-06-01",
-            "--end", "2026-06-30", "--keys", MISSING_KEYS, "--battery", "base_core",
+            "--end", "2026-06-30", "--keys", MISSING_KEYS, "--cores", "2",
         )
         assert code == 0
-        assert "base_core " in out and "base_core_dual" not in out
+        assert "base_core_x2  (78.4 kWh / 22 kW)" in out
 
     def test_a_cache_miss_without_credentials_is_a_clear_error(self, seeded_cache, capsys):
         code, _, err = _run(
@@ -81,18 +81,18 @@ class TestOffline:
 
 
 class TestDefaults:
-    def test_the_default_battery_is_base_core(self):
+    def test_the_default_is_one_base_core(self):
         args = cli.build_parser().parse_args(["compare-zones"])
-        assert args.battery == "base_core"
+        assert args.cores == 1
 
     def test_the_default_zone_is_austin_energy(self):
         args = cli.build_parser().parse_args(["backtest"])
         assert args.zone == "LZ_AEN"
-        assert args.battery == "all"
 
-    def test_generic_batteries_are_not_offered(self):
+    @pytest.mark.parametrize("bad", ["0", "11"])
+    def test_the_count_is_limited(self, bad):
         with pytest.raises(SystemExit):
-            cli.build_parser().parse_args(["compare-zones", "--battery", "commercial_1mw"])
+            cli.build_parser().parse_args(["backtest", "--cores", bad])
 
 
 class TestShortcuts:

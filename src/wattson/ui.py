@@ -16,7 +16,7 @@ from dataclasses import replace
 import pandas as pd
 import streamlit as st
 
-from wattson.config import CENTRAL_TIME, PRESETS, BatteryConfig
+from wattson.config import CENTRAL_TIME, MAX_BASE_CORES, BatteryConfig, base_cores
 from wattson.data.cache import load_range
 from wattson.data.ercot_source import ErcotLiveProvider, load_keys_file
 from wattson.data.providers import PriceRequest
@@ -42,12 +42,14 @@ from wattson.zones import HUBS, LOAD_ZONES, label_for, short_name
 BENCHMARK_LOW = 55.0
 BENCHMARK_HIGH = 66.0
 
-PRESET_LABELS = {
-    "base_core": "Base Core · 39.2 kWh / 11 kW",
-    "base_core_dual": "Base Core, two units · 78.4 kWh / 22 kW",
-    "base_ground_25kwh": "Base ground-mounted · 25 kWh / 11 kW",
-    "base_ground_50kwh": "Base ground-mounted, double · 50 kWh / 11 kW",
-}
+_NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
+                 7: "seven", 8: "eight", 9: "nine", 10: "ten"}
+
+
+def _cores_phrase(count: int) -> str:
+    """How the battery reads inside a sentence: 'a Base Core', 'two Base Cores'."""
+    return "a Base Core" if count == 1 else f"{_NUMBER_WORDS.get(count, count)} Base Cores"
+
 
 DEFAULT_ZONE = "LZ_AEN"
 
@@ -322,12 +324,23 @@ def main() -> None:
             format_func=label_for,
             help=ZONE_HELP,
         )
-        preset_key = st.selectbox(
-            "Base battery",
-            list(PRESET_LABELS),
-            format_func=lambda k: PRESET_LABELS[k],
-        )
-        preset = PRESETS[preset_key]
+        count = int(st.number_input(
+            "How many Base Cores?",
+            min_value=1,
+            max_value=MAX_BASE_CORES,
+            value=1,
+            step=1,
+            help="Each Base Core holds 39.2 kWh and charges or discharges at up "
+                 "to 11 kW. Base installs one or two per home.",
+        ))
+        if count > 1:
+            st.caption(
+                f"{count} Cores hold {39.2 * count:g} kWh. Every Core sees the same "
+                f"prices, so {count} Cores earn {count} times as much as one."
+            )
+        if count > 2:
+            st.caption("Base installs one or two Cores per home; more is shown for comparison.")
+        preset = base_cores(count)
 
         today = _today()
         range_choice = st.selectbox(
@@ -388,7 +401,7 @@ def main() -> None:
                 "to load new dates."
             )
 
-    battery_name = "custom battery" if custom else PRESET_LABELS[preset_key].split(" · ")[0]
+    battery_name = "a custom battery" if custom else _cores_phrase(count)
 
     if len(window) != 2:
         st.info("Pick a start and an end date to replay.")
@@ -442,7 +455,7 @@ def _headline(prices, metrics, battery, battery_name: str, zone: str, market: st
 
     if kept > 0:
         st.success(_md(
-            f"**Over these {days} days ({span}), a {battery_name} {where} would "
+            f"**Over these {days} days ({span}), {battery_name} {where} would "
             f"have kept {_money(kept, 2)}**"
             + ("." if days >= 360 else f", about {_money(per_year)} a year at this pace.")
             + f" It made {_money(made, 2)} by buying power when it was "
@@ -451,7 +464,7 @@ def _headline(prices, metrics, battery, battery_name: str, zone: str, market: st
         ))
     else:
         st.error(_md(
-            f"**Over these {days} days ({span}), a {battery_name} {where} would "
+            f"**Over these {days} days ({span}), {battery_name} {where} would "
             f"not have made money.** It made {_money(made, 2)} buying low and "
             f"selling high, but battery wear cost {_money(wear, 2)}, leaving "
             f"{_money(kept, 2)}. Prices didn't swing enough to cover the wear."
@@ -713,8 +726,9 @@ def _zone_comparison(
     """The same battery and dates in every pricing area."""
     st.subheader("Which part of Texas pays best?")
     st.markdown(_md(
-        f"The same {battery_name}, run over the same dates in every pricing "
-        "area. The only difference is how much prices swing in each place."
+        f"{battery_name[0].upper() + battery_name[1:]}, run over the same dates "
+        "in every pricing area. The only difference is how much prices swing in "
+        "each place."
     ))
     include_hubs = st.checkbox(
         "Also show trading hubs", value=False,
@@ -739,7 +753,7 @@ def _zone_comparison(
     best = annual.idxmax()
     if annual[best] > 0:
         st.success(_md(
-            f"**{short_name(best)} comes out on top**: a {battery_name} there "
+            f"**{short_name(best)} comes out on top**: {battery_name} there "
             f"would have kept about {_money(annual[best])} a year at this pace."
         ))
     else:
@@ -751,7 +765,7 @@ def _zone_comparison(
     st.plotly_chart(zone_comparison_figure(comparison, battery), width="stretch")
 
     span = _span(span_frame)
-    note = f"{_market_name(market)} prices, {span}. Each bar is what one {battery_name} would keep per year after battery wear, at the pace of these dates."
+    note = f"{_market_name(market)} prices, {span}. Each bar is what {battery_name} would keep per year after battery wear, at the pace of these dates."
     if skipped:
         note += " No saved prices for: " + ", ".join(label_for(code) for code in skipped) + "."
     st.caption(_md(note))

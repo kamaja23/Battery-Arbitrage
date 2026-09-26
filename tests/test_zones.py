@@ -1,4 +1,5 @@
 from __future__ import annotations
+import pytest
 
 from wattson.zones import (
     HUBS,
@@ -75,3 +76,24 @@ class TestNameFor:
         from wattson.zones import name_for
 
         assert name_for("LZ_NOWHERE") == "LZ_NOWHERE"
+
+
+class TestBaseCores:
+    def test_one_core_is_base_core(self):
+        from wattson.config import BASE_CORE, base_cores
+
+        assert base_cores(1) is BASE_CORE
+
+    def test_cores_add_up(self):
+        from wattson.config import base_cores
+
+        three = base_cores(3)
+        assert (three.capacity_kwh, three.power_kw) == (117.6, 33.0)
+        assert three.round_trip_efficiency == base_cores(1).round_trip_efficiency
+
+    @pytest.mark.parametrize("bad", [0, 11])
+    def test_out_of_range_counts_are_rejected(self, bad):
+        from wattson.config import base_cores
+
+        with pytest.raises(ValueError):
+            base_cores(bad)

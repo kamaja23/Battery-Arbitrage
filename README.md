@@ -75,9 +75,9 @@ Each command reads the cache first and needs credentials only on a cache
 miss.
 
 ```bash
-wattson backtest                          # Austin Energy, demo window, every Base model
-wattson backtest --zone LZ_WEST --start 2026-07-01 --end 2026-07-31 --battery base_core
-wattson compare-zones --hubs              # rank every zone for one battery
+wattson backtest                          # Austin Energy, demo window, one Base Core
+wattson backtest --zone LZ_WEST --start 2026-07-01 --end 2026-07-31 --cores 2
+wattson compare-zones --hubs              # rank every zone for the same battery
 wattson stability                         # do zone rankings hold month to month?
 wattson fetch --zone LZ_CPS --start 2026-09-01 --end 2026-09-24
 wattson verify-data                       # check row counts and DST handling
@@ -124,9 +124,7 @@ The app lets you backtest against either.
 | Model | Capacity | Power | Source |
 |---|---|---|---|
 | Base Core | 39.2 kWh | 11 kW | basepowercompany.com/specs, Base help center |
-| Base Core, two units | 78.4 kWh | 22 kW | capacity published; power assumed as 2 × 11 kW |
-| Base ground-mounted | 25 kWh | 11 kW | basepowercompany.com/specs, Base help center |
-| Base ground-mounted, double | 50 kWh | 11 kW | basepowercompany.com/specs, Base help center |
+| *n* Base Cores | 39.2 × *n* kWh | 11 × *n* kW | Pick 1–10 in the app (`--cores` on the command line). Base installs one or two per home; adding the inverters up is an assumption |
 
 Base does not publish round-trip efficiency, usable charge window or cycle
 life. The model assumes 90% round-trip efficiency, a 10–95% charge window, and

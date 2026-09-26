@@ -204,7 +204,7 @@ def zone_comparison_figure(comparison: pd.DataFrame, battery=None) -> go.Figure:
     fig.update_layout(
         title="Annualized revenue per zone (same battery, same window)"
         if battery is None
-        else "What one battery would keep per year, by area",
+        else "What it would keep per year, by area",
         height=max(340, 30 * len(codes) + 110),
         margin=dict(r=40, t=60, b=40),
         xaxis_title="USD / kW-year" if battery is None else "Dollars per year, after battery wear",

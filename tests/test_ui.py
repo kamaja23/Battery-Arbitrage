@@ -234,20 +234,20 @@ class TestStrategies:
 
 
 class TestInteraction:
-    def test_switching_base_models_changes_the_result(self, offline_ui):
+    def test_two_cores_keep_twice_as_much_as_one(self, offline_ui):
         offline_ui.run()
-        core = _metric(offline_ui, "Kept").value
-        offline_ui.selectbox[1].set_value("base_core_dual").run()
-        dual = _metric(offline_ui, "Kept").value
-        assert core != dual
+        one = float(_metric(offline_ui, "Kept").value.replace("$", "").replace(",", ""))
+        offline_ui.number_input[0].set_value(2).run()
+        two = float(_metric(offline_ui, "Kept").value.replace("$", "").replace(",", ""))
+        assert two == pytest.approx(2 * one, abs=0.02)
 
-    def test_every_base_model_runs_without_error(self, offline_ui):
-        from wattson.config import PRESETS
+    def test_every_count_runs_without_error(self, offline_ui):
+        from wattson.config import MAX_BASE_CORES
 
         offline_ui.run()
-        for key in PRESETS:
-            offline_ui.selectbox[1].set_value(key).run()
-            assert not offline_ui.exception, key
+        for n in (1, 2, 3, MAX_BASE_CORES):
+            offline_ui.number_input[0].set_value(n).run()
+            assert not offline_ui.exception, n
 
     def test_the_compare_view_runs(self, offline_ui):
         offline_ui.run()
@@ -265,7 +265,7 @@ class TestInteraction:
     def test_a_purchase_price_adds_a_payback_figure(self, offline_ui):
         offline_ui.run()
         offline_ui.checkbox[0].set_value(True).run()
-        offline_ui.number_input[0].set_value(15_000.0).run()
+        offline_ui.number_input[1].set_value(15_000.0).run()
         assert not offline_ui.exception
         assert "Pays for itself in" in [m.label for m in offline_ui.metric]
 
@@ -278,11 +278,39 @@ class TestDemoDefaults:
         assert offline_ui.selectbox[0].value == "LZ_AEN"
         assert "Austin Energy" in label_for(offline_ui.selectbox[0].value)
 
-    def test_it_offers_only_base_batteries(self, offline_ui):
+    def test_it_asks_how_many_base_cores_and_starts_at_one(self, offline_ui):
+        from wattson.config import MAX_BASE_CORES
+
         offline_ui.run()
-        options = offline_ui.selectbox[1].options
-        assert options and all(o.startswith("Base ") for o in options)
-        assert offline_ui.selectbox[1].value == "base_core"
+        picker = offline_ui.number_input[0]
+        assert picker.label == "How many Base Cores?"
+        assert picker.value == 1
+        assert (picker.min, picker.max) == (1, MAX_BASE_CORES)
+        assert "39.2 kWh" in (picker.help or "")
+
+    @pytest.mark.parametrize(
+        ("count", "phrase"),
+        [(1, "a Base Core in the"), (2, "two Base Cores in the"), (3, "three Base Cores in the")],
+    )
+    def test_the_count_reads_naturally_in_the_headline(self, offline_ui, count, phrase):
+        offline_ui.run()
+        offline_ui.number_input[0].set_value(count).run()
+        assert phrase in offline_ui.success[0].value
+
+    def test_it_explains_that_earnings_scale_and_flags_more_than_two(self, offline_ui):
+        offline_ui.run()
+        assert "earn 2 times as much" not in _captions(offline_ui)
+        offline_ui.number_input[0].set_value(2).run()
+        assert "2 Cores earn 2 times as much as one" in _captions(offline_ui)
+        assert "shown for comparison" not in _captions(offline_ui)
+        offline_ui.number_input[0].set_value(3).run()
+        assert "Base installs one or two Cores per home" in _captions(offline_ui)
+
+    def test_the_comparison_uses_the_count_too(self, offline_ui):
+        offline_ui.run()
+        offline_ui.number_input[0].set_value(2).run()
+        offline_ui.radio[0].set_value(COMPARE).run()
+        assert "two Base Cores there would have kept" in offline_ui.success[0].value
 
     def test_payback_is_not_claimed_without_a_price(self, offline_ui):
         offline_ui.run()
@@ -371,7 +399,7 @@ class TestDatePresets:
 
     def test_it_offers_presets_and_custom_dates(self, offline_ui):
         offline_ui.run()
-        picker = offline_ui.selectbox[2]
+        picker = offline_ui.selectbox[1]
         assert picker.label == "Dates to replay"
         assert picker.options == [
             "Last 7 days", "Last month", "Last 2 months", "Last 3 months",
@@ -383,7 +411,7 @@ class TestDatePresets:
 
         monkeypatch.setattr(ui, "_today", lambda: self.TODAY)
         offline_ui.run()
-        assert offline_ui.selectbox[2].value == "Last month"
+        assert offline_ui.selectbox[1].value == "Last month"
         assert "Aug 27, 2026 to today (Sep 26)" in _captions(offline_ui)
 
     @pytest.mark.parametrize(
@@ -407,7 +435,7 @@ class TestDatePresets:
         monkeypatch.setattr(ui, "_today", lambda: self.TODAY)
         offline_ui.run()
         assert not offline_ui.date_input
-        offline_ui.selectbox[2].set_value("Custom dates").run()
+        offline_ui.selectbox[1].set_value("Custom dates").run()
         picker = offline_ui.date_input[0]
         assert picker.value == (dt.date(2026, 8, 28), self.TODAY)
         assert picker.max == self.TODAY
