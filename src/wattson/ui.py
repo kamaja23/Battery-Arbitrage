@@ -41,7 +41,8 @@ from wattson.viz import (
     strategy_figure,
     zone_comparison_figure,
 )
-from wattson.zones import HUBS, LOAD_ZONES, label_for, short_name
+from wattson.solar import ANNUAL_KWH_PER_KW, DEFAULT_PANEL_KW, panel_output_kw, solar_value
+from wattson.zones import HUBS, LOAD_ZONES, coordinates, label_for, short_name
 
 
 # Intertrust's published range for optimized pure RTM arbitrage, used only as
@@ -198,7 +199,10 @@ def _run_cached(zone: str, start: str, end: str, market: str, battery, ready: bo
 
 
 @st.cache_data(show_spinner=False, ttl=600)
-def _compare_cached(targets: tuple[str, ...], start: str, end: str, market: str, battery, ready: bool):
+def _compare_cached(
+    targets: tuple[str, ...], start: str, end: str, market: str, battery, ready: bool,
+    panel_kw: float = 0.0,
+):
     frames: dict[str, pd.DataFrame] = {}
     skipped: list[str] = []
     for code in targets:
@@ -212,7 +216,14 @@ def _compare_cached(targets: tuple[str, ...], start: str, end: str, market: str,
         else None
     )
     span_frame = next(iter(frames.values())) if frames else None
-    return comparison, skipped, span_frame
+    solar_per_year = (
+        pd.Series(
+            {code: solar_value(f, panel_kw, *coordinates(code)).per_year_usd for code, f in frames.items()}
+        )
+        if panel_kw > 0 and frames
+        else None
+    )
+    return comparison, skipped, span_frame, solar_per_year
 
 
 def _date_ranges(days) -> str:
@@ -387,6 +398,25 @@ def main() -> None:
                 f"{count} batteries hold {preset.capacity_kwh:,g} kWh. Every one sees "
                 f"the same prices, so {count} batteries earn {count} times as much as one."
             )
+        with_solar = st.checkbox(
+            "Add solar panels",
+            value=False,
+            help="Rooftop solar alongside the battery. Wattson estimates what the "
+                 "panels produce from the sun's position in the chosen area and "
+                 "sells it at the same prices the battery trades at.",
+        )
+        panel_kw = 0.0
+        if with_solar:
+            panel_kw = float(st.number_input(
+                "Solar panel size (kW)",
+                min_value=0.5,
+                max_value=5000.0,
+                value=DEFAULT_PANEL_KW,
+                step=0.5,
+                help=f"The panels' rated size. {DEFAULT_PANEL_KW:g} kW is a typical "
+                     f"Texas home system; each kW makes about {ANNUAL_KWH_PER_KW:,.0f} "
+                     "kWh a year.",
+            ))
 
         today = _today()
         range_choice = st.selectbox(
@@ -469,6 +499,7 @@ def main() -> None:
             )
 
     battery_name = "a custom battery" if custom else _battery_phrase(preset_key, count)
+    solar_phrase = f" with {panel_kw:g} kW of solar panels" if panel_kw else ""
 
     if len(window) != 2:
         st.info("Pick a start and an end date to replay.")
@@ -477,7 +508,9 @@ def main() -> None:
     end_date = window[1]
 
     if view == "Compare all of Texas":
-        _zone_comparison(start, end, market, battery, battery_name, credentials_ready)
+        _zone_comparison(
+            start, end, market, battery, battery_name + solar_phrase, credentials_ready, panel_kw
+        )
         return
 
     try:
@@ -490,8 +523,10 @@ def main() -> None:
         return
 
     per_year = _headline(prices, metrics, battery, battery_name, zone, market)
+    if panel_kw:
+        _solar_section(prices, metrics, per_year, panel_kw, zone)
     _data_notes(prices, end_date, _today())
-    _day_in_the_life(result)
+    _day_in_the_life(result, panel_kw, zone)
     _day_by_day(result)
     _strategy_section(comparison)
     _forecast_section(plan, plan_error, accuracy, battery)
@@ -578,7 +613,66 @@ def _headline(prices, metrics, battery, battery_name: str, zone: str, market: st
     return per_year
 
 
-def _day_in_the_life(result) -> None:
+def _solar_section(prices, metrics, battery_per_year: float, panel_kw: float, zone: str) -> None:
+    """Rooftop solar next to the battery, and how the two add up."""
+    solar = solar_value(prices, panel_kw, *coordinates(zone))
+    days = max(round(solar.days), 1)
+    battery_left = metrics.net_after_degradation_usd
+    together = battery_left + solar.revenue_usd
+    together_per_year = battery_per_year + solar.per_year_usd
+
+    st.subheader("With solar panels")
+    st.markdown(_md(
+        f"Over these {days} days, {panel_kw:g} kW of solar panels in the "
+        f"{short_name(zone)} area would have made about {solar.generated_kwh:,.0f} kWh "
+        f"of electricity, worth {_money(solar.revenue_usd, 2)} at the same prices. "
+        f"Together with the battery's {_money(battery_left, 2)} after wear, that's "
+        f"**{_money(together, 2)}**"
+        + ("." if days >= 360 else f", about {_money(together_per_year)} a year at this pace.")
+    ))
+    cols = st.columns(3)
+    cols[0].metric(
+        "Solar made", f"{solar.generated_kwh:,.0f} kWh",
+        help="Estimated panel output over these dates, from the sun's position "
+             "in this area on an average-weather day.",
+    )
+    cols[1].metric(
+        "Solar earned", _money(solar.revenue_usd, 2),
+        help="Panel output sold at the same prices the battery trades at. "
+             "Panels switch off when the price is below zero.",
+    )
+    cols[2].metric(
+        "Battery and solar per year", _money(together_per_year),
+        help="The battery's earnings after wear plus the panels', scaled up to a "
+             "full year at the pace of these dates.",
+    )
+
+    cheaper = solar.avg_price_sold_usd_per_mwh < solar.avg_price_usd_per_mwh
+    insight = (
+        f"Solar sold at an average of {_cents(solar.avg_price_sold_usd_per_mwh)} per kWh, "
+        f"compared with {_cents(solar.avg_price_usd_per_mwh)} for power overall"
+        + (", because panels produce most around midday, when power is cheapest."
+           if cheaper else ".")
+    )
+    if solar.switched_off_hours >= 1:
+        insight += (
+            f" The panels were switched off for about {solar.switched_off_hours:,.0f} "
+            "sunny hours when prices went below zero."
+        )
+    insight += " The battery does the opposite: it sells in the evening, when power costs more."
+    st.caption(_md(insight))
+    st.caption(
+        "How this is estimated: panel output follows a typical day for this part of "
+        f"Texas, scaled to about {ANNUAL_KWH_PER_KW:,.0f} kWh a year for each kW of "
+        "panels; individual cloudy days aren't modelled. Solar is valued at the "
+        "same wholesale price as the battery. Power used at home instead of "
+        "bought is usually worth more, at your retail rate, but home use isn't "
+        "modelled. The battery could store solar power, but that's worth the "
+        "same as charging from the grid at that moment, so the two simply add up."
+    )
+
+
+def _day_in_the_life(result, panel_kw: float = 0.0, zone: str = "") -> None:
     st.subheader("A day in the life")
     st.markdown("Pick a day to see when the battery bought power and when it sold it.")
     ledger = result.ledger
@@ -594,7 +688,8 @@ def _day_in_the_life(result) -> None:
         else options[0]
     )
     one = ledger[dates == day]
-    st.plotly_chart(day_in_the_life_figure(one, result.battery), width="stretch")
+    solar = panel_output_kw(one["interval_start"], panel_kw, *coordinates(zone)) if panel_kw else None
+    st.plotly_chart(day_in_the_life_figure(one, result.battery, solar), width="stretch")
 
     bought = one["charged_kwh"].sum()
     sold = one["discharged_kwh"].sum()
@@ -791,6 +886,7 @@ def _zone_comparison(
     battery,
     battery_name: str,
     credentials_ready: bool,
+    panel_kw: float = 0.0,
 ) -> None:
     """The same battery and dates in every pricing area."""
     st.subheader("Which part of Texas pays best?")
@@ -807,8 +903,8 @@ def _zone_comparison(
     targets = tuple(LOAD_ZONES) + (tuple(HUBS) if include_hubs else ())
 
     with st.spinner("Running the battery in every area. Long periods take a minute the first time..."):
-        comparison, skipped, span_frame = _compare_cached(
-            targets, start, end, market, battery, credentials_ready
+        comparison, skipped, span_frame, solar_per_year = _compare_cached(
+            targets, start, end, market, battery, credentials_ready, panel_kw
         )
 
     if comparison is None:
@@ -818,13 +914,19 @@ def _zone_comparison(
         ))
         return
 
-    annual = comparison["usd_per_kw_year"] * battery.power_kw
+    battery_annual = comparison["usd_per_kw_year"] * battery.power_kw
+    annual = battery_annual if solar_per_year is None else battery_annual + solar_per_year.reindex(battery_annual.index)
     best = annual.idxmax()
     if annual[best] > 0:
         st.success(_md(
             f"**{short_name(best)} comes out on top**: {battery_name} there "
             f"would have earned about {_money(annual[best])} a year after wear, at "
             "this pace."
+            + (
+                f" Of that, about {_money(solar_per_year[best])} comes from the panels."
+                if solar_per_year is not None
+                else ""
+            )
         ))
     else:
         st.error(_md(
@@ -832,7 +934,7 @@ def _zone_comparison(
             f"{short_name(best)} lost the least."
         ))
 
-    st.plotly_chart(zone_comparison_figure(comparison, battery), width="stretch")
+    st.plotly_chart(zone_comparison_figure(comparison, battery, solar_per_year), width="stretch")
 
     span = _span(span_frame)
     note = f"{_market_name(market)} prices, {span}. Each bar is what {battery_name} would earn per year after battery wear, at the pace of these dates."
@@ -847,6 +949,14 @@ def _zone_comparison(
                 "Made ($)": comparison["net_usd"].round(2),
                 "Left after wear ($)": comparison["net_after_degradation_usd"].round(2),
                 "Per year ($)": annual.round(0),
+                **(
+                    {
+                        "Battery per year ($)": battery_annual.round(0),
+                        "Solar per year ($)": solar_per_year.reindex(battery_annual.index).round(0),
+                    }
+                    if solar_per_year is not None
+                    else {}
+                ),
                 "Average price (¢ per kWh)": (comparison["mean_price_usd_per_mwh"] / 10).round(2),
                 "Priciest 5% of the time (¢ per kWh)": (comparison["p95_price_usd_per_mwh"] / 10).round(2),
             },

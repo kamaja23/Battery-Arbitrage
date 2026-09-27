@@ -169,7 +169,7 @@ def daily_revenue_figure(result: BacktestResult) -> go.Figure:
     return fig
 
 
-def zone_comparison_figure(comparison: pd.DataFrame, battery=None) -> go.Figure:
+def zone_comparison_figure(comparison: pd.DataFrame, battery=None, extra_per_year=None) -> go.Figure:
     """Annualized revenue per zone, weakest at the bottom.
 
     Zones are ordered so the reader sees the ranking immediately, and a zero
@@ -177,16 +177,16 @@ def zone_comparison_figure(comparison: pd.DataFrame, battery=None) -> go.Figure:
     """
     from wattson.zones import name_for
 
-    ordered = comparison.sort_values("usd_per_kw_year", ascending=True)
-    colors = [
-        _CHARGE_COLOR if v > 0 else _DISCHARGE_COLOR
-        for v in ordered["usd_per_kw_year"]
-    ]
-    codes = list(ordered.index)
     # With a battery, show what that battery keeps per year rather than the
-    # per-kW figure, which means nothing to most people.
+    # per-kW figure, which means nothing to most people. ``extra_per_year``
+    # (e.g. solar panels) is added per area before ranking.
     scale = battery.power_kw if battery is not None else 1.0
-    values = ordered["usd_per_kw_year"] * scale
+    totals = comparison["usd_per_kw_year"] * scale
+    if extra_per_year is not None:
+        totals = totals + pd.Series(extra_per_year).reindex(totals.index).fillna(0.0)
+    values = totals.sort_values(ascending=True)
+    codes = list(values.index)
+    colors = [_CHARGE_COLOR if v > 0 else _DISCHARGE_COLOR for v in values]
     fig = go.Figure(
         go.Bar(
             x=values,
@@ -207,7 +207,11 @@ def zone_comparison_figure(comparison: pd.DataFrame, battery=None) -> go.Figure:
         else "What it would earn per year after wear, by area",
         height=max(340, 30 * len(codes) + 110),
         margin=dict(r=40, t=60, b=40),
-        xaxis_title="USD / kW-year" if battery is None else "Dollars per year, after battery wear",
+        xaxis_title="USD / kW-year" if battery is None else (
+            "Dollars per year: battery after wear, plus solar"
+            if extra_per_year is not None
+            else "Dollars per year, after battery wear"
+        ),
         yaxis=dict(automargin=True),
         showlegend=False,
     )
@@ -231,21 +235,26 @@ def cents_per_kwh(usd_per_mwh):
     return usd_per_mwh / 10.0
 
 
-def day_in_the_life_figure(day: pd.DataFrame, battery) -> go.Figure:
+def day_in_the_life_figure(day: pd.DataFrame, battery, solar_kw=None) -> go.Figure:
     """One day: the price of power, and when the battery bought and sold.
 
-    ``day`` is the slice of a backtest ledger for a single date.
+    ``day`` is the slice of a backtest ledger for a single date. ``solar_kw``,
+    if given, is panel output for the same intervals and gets its own row.
     """
+    with_solar = solar_kw is not None
     price = cents_per_kwh(day["price_usd_per_mwh"])
     buying = day["charge_kw"] > 0
     selling = day["discharge_kw"] > 0
+    titles = ["Price of electricity (cents per kWh)", "How full the battery is"]
+    if with_solar:
+        titles.append("Solar panel output (kW)")
     fig = make_subplots(
-        rows=2,
+        rows=len(titles),
         cols=1,
         shared_xaxes=True,
-        row_heights=[0.68, 0.32],
-        vertical_spacing=0.08,
-        subplot_titles=("Price of electricity (cents per kWh)", "How full the battery is"),
+        row_heights=[0.56, 0.22, 0.22] if with_solar else [0.68, 0.32],
+        vertical_spacing=0.07 if with_solar else 0.08,
+        subplot_titles=tuple(titles),
     )
     fig.add_trace(
         go.Scatter(
@@ -279,11 +288,21 @@ def day_in_the_life_figure(day: pd.DataFrame, battery) -> go.Figure:
         ),
         row=2, col=1,
     )
+    if with_solar:
+        fig.add_trace(
+            go.Scatter(
+                x=day["interval_start"], y=solar_kw, name="Solar output",
+                fill="tozeroy", line=dict(color="#f9a825", width=2),
+                hovertemplate="%{x|%-I:%M %p}<br>%{y:.1f} kW from the panels<extra></extra>",
+            ),
+            row=3, col=1,
+        )
+        fig.update_yaxes(title_text="kW", rangemode="tozero", row=3, col=1)
     fig.update_yaxes(title_text="¢ per kWh", row=1, col=1)
     fig.update_yaxes(title_text="% full", range=[0, 100], row=2, col=1)
-    fig.update_xaxes(tickformat="%-I %p", row=2, col=1)
+    fig.update_xaxes(tickformat="%-I %p", row=len(titles), col=1)
     fig.update_layout(
-        height=520,
+        height=660 if with_solar else 520,
         legend=dict(orientation="h", yanchor="bottom", y=1.06, x=0),
         margin=dict(l=60, r=30, t=80, b=40),
     )

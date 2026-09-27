@@ -130,3 +130,12 @@ class TestShortcuts:
             "wattson-verify-data": "wattson.cli:verify_main",
             "wattson-fetch": "wattson.cli:fetch_main",
         }
+
+
+def test_backtest_can_add_solar(seeded_cache, capsys):
+    code, out, _ = _run(
+        capsys, "backtest", "--zone", "LZ_AEN", "--start", "2026-06-01", "--end", "2026-06-30",
+        "--keys", MISSING_KEYS, "--battery", "residential_13kwh", "--solar-kw", "8",
+    )
+    assert code == 0
+    assert "solar panels (8 kW):" in out

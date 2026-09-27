@@ -36,6 +36,9 @@ class SettlementPoint:
     name: str
     area: str
     kind: str
+    # Approximate center, used to place the sun for the solar-panel estimate.
+    lat: float = 31.0
+    lon: float = -99.0
 
     @property
     def label(self) -> str:
@@ -50,21 +53,21 @@ SETTLEMENT_POINTS: dict[str, SettlementPoint] = {
     sp.code: sp
     for sp in (
         # Competitive load zones.
-        SettlementPoint("LZ_NORTH", "North Texas", "Dallas–Fort Worth", COMPETITIVE),
-        SettlementPoint("LZ_SOUTH", "South Texas", "Corpus Christi / Laredo", COMPETITIVE),
-        SettlementPoint("LZ_WEST", "West Texas", "Midland–Odessa", COMPETITIVE),
-        SettlementPoint("LZ_HOUSTON", "Houston", "Houston metro", COMPETITIVE),
+        SettlementPoint("LZ_NORTH", "North Texas", "Dallas–Fort Worth", COMPETITIVE, 32.8, -96.8),
+        SettlementPoint("LZ_SOUTH", "South Texas", "Corpus Christi / Laredo", COMPETITIVE, 27.8, -97.4),
+        SettlementPoint("LZ_WEST", "West Texas", "Midland–Odessa", COMPETITIVE, 32.0, -102.1),
+        SettlementPoint("LZ_HOUSTON", "Houston", "Houston metro", COMPETITIVE, 29.8, -95.4),
         # Non-Opt-In Entity load zones.
-        SettlementPoint("LZ_AEN", "Austin Energy", "Austin / Travis Co.", MUNICIPAL),
-        SettlementPoint("LZ_CPS", "CPS Energy", "San Antonio / Bexar Co.", MUNICIPAL),
-        SettlementPoint("LZ_LCRA", "Lower Colorado River Authority", "Central Texas", NOIE),
-        SettlementPoint("LZ_RAYBN", "Rayburn County Electric Co-op", "East Texas", NOIE),
+        SettlementPoint("LZ_AEN", "Austin Energy", "Austin / Travis Co.", MUNICIPAL, 30.3, -97.7),
+        SettlementPoint("LZ_CPS", "CPS Energy", "San Antonio / Bexar Co.", MUNICIPAL, 29.4, -98.5),
+        SettlementPoint("LZ_LCRA", "Lower Colorado River Authority", "Central Texas", NOIE, 30.5, -98.2),
+        SettlementPoint("LZ_RAYBN", "Rayburn County Electric Co-op", "East Texas", NOIE, 32.9, -96.1),
         # Trading hubs.
-        SettlementPoint("HB_PAN", "Texas Panhandle hub", "Amarillo", HUB),
-        SettlementPoint("HB_WEST", "West Texas hub", "Midland–Odessa", HUB),
-        SettlementPoint("HB_NORTH", "North Texas hub", "Dallas–Fort Worth", HUB),
-        SettlementPoint("HB_SOUTH", "South Texas hub", "Corpus Christi", HUB),
-        SettlementPoint("HB_HOUSTON", "Houston hub", "Houston metro", HUB),
+        SettlementPoint("HB_PAN", "Texas Panhandle hub", "Amarillo", HUB, 35.2, -101.8),
+        SettlementPoint("HB_WEST", "West Texas hub", "Midland–Odessa", HUB, 32.0, -102.1),
+        SettlementPoint("HB_NORTH", "North Texas hub", "Dallas–Fort Worth", HUB, 32.8, -96.8),
+        SettlementPoint("HB_SOUTH", "South Texas hub", "Corpus Christi", HUB, 27.8, -97.4),
+        SettlementPoint("HB_HOUSTON", "Houston hub", "Houston metro", HUB, 29.8, -95.4),
     )
 }
 
@@ -96,3 +99,9 @@ def short_name(code: str) -> str:
     """Just the name, for use inside a sentence: ``"LZ_AEN"`` -> ``"Austin Energy"``."""
     point = SETTLEMENT_POINTS.get(code)
     return point.name if point else code
+
+
+def coordinates(code: str) -> tuple[float, float]:
+    """Approximate (latitude, longitude) of a settlement point."""
+    point = SETTLEMENT_POINTS.get(code)
+    return (point.lat, point.lon) if point else (31.0, -99.0)

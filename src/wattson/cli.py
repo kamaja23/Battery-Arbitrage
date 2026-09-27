@@ -22,7 +22,8 @@ from wattson.data.ercot_source import ErcotLiveProvider, load_keys_file
 from wattson.data.providers import PriceRequest
 from wattson.metrics import compare_strategies, compare_zones, rank_agreement, rank_stability
 from wattson.strategies.threshold import ThresholdStrategy
-from wattson.zones import HUBS, LOAD_ZONES, label_for
+from wattson.solar import solar_value
+from wattson.zones import HUBS, LOAD_ZONES, coordinates, label_for
 
 DEFAULT_KEYS = "ERCOT API Keys.txt"
 
@@ -135,6 +136,15 @@ def cmd_backtest(args: argparse.Namespace) -> int:
             )
             print(view.round(2).to_string())
 
+    if args.solar_kw:
+        solar = solar_value(prices, args.solar_kw, *coordinates(args.zone))
+        print(
+            f"\nsolar panels ({args.solar_kw:g} kW): {solar.generated_kwh:,.0f} kWh, "
+            f"${solar.revenue_usd:,.2f} (${solar.per_year_usd:,.0f}/yr), sold at "
+            f"{solar.avg_price_sold_usd_per_mwh / 10:.2f}c/kWh vs "
+            f"{solar.avg_price_usd_per_mwh / 10:.2f}c average; switched off "
+            f"{solar.switched_off_hours:,.0f} h at negative prices"
+        )
     print(
         "\nWithout a battery there is no spread to capture, so the baseline is $0.\n"
         "The forecast strategy plans each day from earlier days' prices only.\n"
@@ -283,6 +293,10 @@ def build_parser() -> argparse.ArgumentParser:
     backtest = sub.add_parser("backtest", help="backtest the strategies on real prices")
     _add_common(backtest)
     _add_battery(backtest, allow_all=True)
+    backtest.add_argument(
+        "--solar-kw", type=float, default=0.0,
+        help="also estimate rooftop solar panels of this size (kW)",
+    )
     backtest.set_defaults(func=cmd_backtest)
 
     fetch = sub.add_parser("fetch", help="download and cache prices only")

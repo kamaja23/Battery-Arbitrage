@@ -5,6 +5,7 @@ from pathlib import Path
 
 import datetime as dt
 
+import numpy as np
 import pandas as pd
 import pytest
 import streamlit as st
@@ -57,6 +58,10 @@ def _captions(app) -> str:
 
 def _number(app, label_start: str):
     return next(n for n in app.number_input if n.label.startswith(label_start))
+
+
+def _checkbox(app, label: str):
+    return next(c for c in app.checkbox if c.label == label)
 
 
 def _expander(app, label: str):
@@ -271,7 +276,9 @@ class TestInteraction:
 
     def test_a_purchase_price_adds_a_payback_figure(self, offline_ui):
         offline_ui.run()
-        offline_ui.checkbox[0].set_value(True).run()
+        offline_ui.selectbox[1].set_value("large_home_39kwh").run()
+        assert "Pays for itself in" not in [m.label for m in offline_ui.metric]
+        _checkbox(offline_ui, "Try a custom battery size").set_value(True).run()
         _number(offline_ui, "Purchase price").set_value(15_000.0).run()
         assert not offline_ui.exception
         assert "Pays for itself in" in [m.label for m in offline_ui.metric]
@@ -681,3 +688,72 @@ def test_the_app_never_mentions_base_or_its_fees(offline_ui):
     texts += [w.help or "" for w in list(offline_ui.metric) + list(offline_ui.number_input) + list(offline_ui.slider)]
     hits = [t for t in texts if re.search(r"\bBase\b|\bCores?\b|subscription|monthly fee|install fee", t)]
     assert hits == []
+
+
+class TestSolar:
+    def _on(self, app, kw: float | None = None):
+        app.run()
+        _checkbox(app, "Add solar panels").set_value(True).run()
+        if kw is not None:
+            _number(app, "Solar panel size").set_value(kw).run()
+
+    def test_solar_is_off_by_default(self, offline_ui):
+        offline_ui.run()
+        assert not _checkbox(offline_ui, "Add solar panels").value
+        assert "With solar panels" not in [s.value for s in offline_ui.subheader]
+        assert not any(n.label.startswith("Solar panel size") for n in offline_ui.number_input)
+
+    def test_turning_it_on_adds_a_section_with_the_totals(self, offline_ui):
+        self._on(offline_ui)
+        assert not offline_ui.exception
+        assert _number(offline_ui, "Solar panel size").value == 8.0
+        subheads = [s.value for s in offline_ui.subheader]
+        assert subheads.index("With solar panels") < subheads.index("A day in the life")
+        labels = [m.label for m in offline_ui.metric]
+        assert {"Solar made", "Solar earned", "Battery and solar per year"} <= set(labels)
+        text = " ".join(m.value for m in offline_ui.markdown)
+        assert "8 kW of solar panels in the Austin Energy area would have made about" in text
+        assert "Together with the battery's" in text
+
+    def test_bigger_panels_earn_more(self, offline_ui):
+        def dollars():
+            return float(_metric(offline_ui, "Solar earned").value.replace("$", "").replace(",", ""))
+
+        self._on(offline_ui)
+        small = dollars()
+        _number(offline_ui, "Solar panel size").set_value(16.0).run()
+        assert dollars() == pytest.approx(2 * small, rel=0.01)
+
+    def test_it_explains_what_is_and_is_not_modelled(self, offline_ui):
+        self._on(offline_ui)
+        text = _captions(offline_ui)
+        assert "Solar sold at an average of" in text
+        assert "cloudy days aren't modelled" in text
+        assert "home use isn't modelled" in text
+        assert "the two simply add up" in text
+
+    def test_the_day_chart_gets_a_solar_row(self, offline_ui):
+        import json
+
+        self._on(offline_ui)
+        charts = [json.loads(c.proto.spec) for c in offline_ui.get("plotly_chart")]
+        names = [trace.get("name") for chart in charts for trace in chart["data"]]
+        assert "Solar output" in names
+
+    def test_the_comparison_adds_solar_per_area(self, offline_ui):
+        self._on(offline_ui)
+        offline_ui.radio[0].set_value(COMPARE).run()
+        assert not offline_ui.exception
+        text = offline_ui.success[0].value
+        assert "with 8 kW of solar panels there would have earned" in text
+        assert "comes from the panels" in text
+        table = _expander(offline_ui, "Show the detailed numbers").dataframe[0].value
+        assert {"Battery per year ($)", "Solar per year ($)"} <= set(table.columns)
+        together = table["Battery per year ($)"] + table["Solar per year ($)"]
+        assert np.allclose(table["Per year ($)"], together, atol=1.0)
+
+    def test_the_solar_wording_avoids_jargon(self, offline_ui):
+        self._on(offline_ui)
+        hits = [t for t in TestPlainLanguage._main_page_text(offline_ui) if TestPlainLanguage.JARGON.search(t)]
+        assert hits == []
+        assert _unescaped_dollars(offline_ui) == []

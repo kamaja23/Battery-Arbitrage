@@ -78,6 +78,7 @@ miss.
 
 ```bash
 wattson backtest                          # Austin Energy, demo window, every preset
+wattson backtest --battery residential_13kwh --solar-kw 8   # add 8 kW of solar
 wattson backtest --zone LZ_WEST --start 2026-07-01 --end 2026-07-31 --battery large_home_39kwh --count 2
 wattson compare-zones --hubs              # rank every zone for the same battery
 wattson stability                         # do zone rankings hold month to month?
@@ -122,6 +123,15 @@ The app lets you backtest against either.
   3¢, and results are very sensitive to them. It can be changed under "More
   options". Energy lost as heat while charging (about 10%) is counted
   separately, in what the battery earns.
+- **Solar panels** (optional, "Add solar panels" in the sidebar or
+  `--solar-kw` on the command line): panel output follows the sun's position
+  in each area, for panels tilted at the latitude and facing south, scaled so a
+  year averages about 1,450 kWh per kW of panels. It has the right daily and
+  seasonal shape but no individual cloudy days. Solar is sold at the same
+  wholesale price the battery trades at, and panels switch off when the price
+  is below zero. Home use and retail rates aren't modelled. The battery and
+  the panels simply add up: storing your own solar is worth the same as
+  charging from the grid at that moment when both are valued at the same price.
 - **Revenue per kW-year** is after battery wear, annualized from the window.
   It is not a projection.
 - **Not modelled**: demand charges, solar self-consumption, backup value,
@@ -168,6 +178,7 @@ src/wattson/data/           ERCOT client, normalization, on-disk cache
 src/wattson/sim/            battery physics and backtest engine
 src/wattson/strategies/     threshold, forecast, perfect foresight
 src/wattson/forecast.py     price forecast, accuracy scoring, next-day plan
+src/wattson/solar.py        rooftop solar output and value
 src/wattson/metrics.py      economics, strategy and zone comparisons, rank stability
 src/wattson/parallel.py     runs long backtests on several CPU cores
 src/wattson/ui.py           Streamlit app
