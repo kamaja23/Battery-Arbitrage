@@ -1,4 +1,4 @@
-# Wattson: Streamlit UI that backtests Base home batteries on real ERCOT prices.
+# Wattson: Streamlit UI that backtests batteries on real ERCOT prices.
 #
 # Two stages so the runtime image carries no build toolchain. The PuLP CBC
 # solver is a prebuilt linux binary that needs libstdc++, which is why that

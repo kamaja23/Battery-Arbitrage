@@ -1,7 +1,7 @@
 # Wattson
 
-Would a Base battery pay for itself in your ERCOT zone? Wattson backtests
-Base Power's home batteries against real ERCOT settlement prices, compares
+Would a battery pay for itself in your ERCOT zone? Wattson backtests home and
+commercial batteries against real ERCOT settlement prices, compares
 dispatch strategies against a no-battery baseline and a perfect-foresight
 ceiling, ranks every Texas load zone, and plans the next day from a price
 forecast.
@@ -43,8 +43,9 @@ in cents per kWh (the unit on a home bill) and earnings in dollars for the
 chosen battery. Industry units live under "Show the detailed numbers".
 
 1. **How it works**: three sentences on why a battery can earn money at all.
-2. **Headline**: what a Base Core in the Austin Energy area would have kept
-   over the last month up to today, and that pace scaled to a year. Presets
+2. **Headline**: what a 13.5 kWh home battery in the Austin Energy area would
+   have earned over the last month up to today, after battery wear, and that
+   pace scaled to a year. Presets
    run from the last 7 days to the last year, or pick custom dates.
 3. **A day in the life**: pick any day to see the price of power and the
    moments the battery bought and sold. It opens on the best day.
@@ -58,7 +59,8 @@ chosen battery. Industry units live under "Show the detailed numbers".
    in dollars per year.
 
 The page is driven by the **forecast planner**. Across April–August, after
-battery wear, it beat the simple rule in 32 of 40 zone-months.
+battery wear, it beat the simple rule in 32 of 40 zone-months (39.2 kWh home
+battery, all eight zones).
 
 ## How prices are loaded
 
@@ -75,8 +77,8 @@ Each command reads the cache first and needs credentials only on a cache
 miss.
 
 ```bash
-wattson backtest                          # Austin Energy, demo window, one Base Core
-wattson backtest --zone LZ_WEST --start 2026-07-01 --end 2026-07-31 --cores 2
+wattson backtest                          # Austin Energy, demo window, every preset
+wattson backtest --zone LZ_WEST --start 2026-07-01 --end 2026-07-31 --battery large_home_39kwh --count 2
 wattson compare-zones --hubs              # rank every zone for the same battery
 wattson stability                         # do zone rankings hold month to month?
 wattson fetch --zone LZ_CPS --start 2026-09-01 --end 2026-09-24
@@ -115,37 +117,31 @@ The app lets you backtest against either.
   earlier forecast or decision.
 - **Battery wear** is the permanent capacity loss as the lithium cells age
   with use, which eventually means replacing the battery. Every kWh in or out
-  is charged 1.2¢ as its share of that replacement. This is an estimate: Base
-  doesn't publish cycle life or replacement cost, reasonable values run from
-  about 1¢ to 3¢, and results are very sensitive to it. It can be changed under
-  "More options". Energy lost as heat while charging (about 10%) is counted
+  is charged a few cents as its share of that replacement (0.8–1.5¢ depending
+  on the preset). These are estimates, reasonable values run from about 1¢ to
+  3¢, and results are very sensitive to them. It can be changed under "More
+  options". Energy lost as heat while charging (about 10%) is counted
   separately, in what the battery earns.
-- **Who pays for wear**: Base owns and maintains its batteries, so wear is
-  Base's cost, not the homeowner's. "Left after wear" is what the battery's
-  buying and selling is worth once that cost is counted.
-- **Plan fees**: the page shows how much of Base's fees for a Core in Texas,
-  $695 to install and $19 a month, the battery's grid trading would pay for.
-  The fees are what a homeowner pays Base, and the trading earnings go to Base,
-  so this reads from Base's side of the ledger.
 - **Revenue per kW-year** is after battery wear, annualized from the window.
   It is not a projection.
 - **Not modelled**: demand charges, solar self-consumption, backup value,
-  ancillary services, and Base's fleet-level grid services. These are
+  ancillary services, and fleet-level grid services. These are
   usually worth more to a homeowner than energy arbitrage alone.
 
-## Base battery specs used
+## Battery presets
 
-| Model | Capacity | Power | Source |
-|---|---|---|---|
-| Base Core | 39.2 kWh | 11 kW | basepowercompany.com/specs, Base help center |
-| *n* Base Cores | 39.2 × *n* kWh | 11 × *n* kW | Pick 1–10 in the app (`--cores` on the command line). Base installs one or two per home; adding the inverters up is an assumption |
+| Preset | Capacity | Power | Round trip | Wear | Purchase price |
+|---|---|---|---|---|---|
+| Home battery (default) | 13.5 kWh | 5 kW | 90% | 1.5¢/kWh | $15,000 |
+| Large home battery | 39.2 kWh | 11 kW | 90% | 1.2¢/kWh | not set |
+| Commercial battery | 2 MWh | 1 MW | 92% | 0.8¢/kWh | $960,000 |
 
-Base does not publish round-trip efficiency, usable charge window or cycle
-life. The model assumes 90% round-trip efficiency, a 10–95% charge window, and
-$0.012 per kWh of throughput for wear, all typical for LFP batteries. These
-live in `src/wattson/config.py`.
+Pick 1–10 identical batteries in the app (`--count` on the command line); their
+capacity, power and price add up. A purchase price can be entered under "Try a
+custom battery size" to get a payback figure. The presets live in
+`src/wattson/config.py`.
 
-## What the data says (real-time prices, April–September 2026, Base Core)
+## What the data says (real-time prices, April–September 2026, 39.2 kWh home battery)
 
 - **Zone rankings are only moderately stable.** Across April–August the mean
   rank correlation between months is 0.44. West Texas (`LZ_WEST`) is the only

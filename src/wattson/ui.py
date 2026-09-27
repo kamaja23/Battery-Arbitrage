@@ -16,7 +16,7 @@ from dataclasses import replace
 import pandas as pd
 import streamlit as st
 
-from wattson.config import CENTRAL_TIME, MAX_BASE_CORES, BatteryConfig, base_cores
+from wattson.config import CENTRAL_TIME, MAX_COUNT, PRESETS, BatteryConfig, scaled
 from wattson.data.cache import load_range
 from wattson.data.ercot_source import ErcotLiveProvider, load_keys_file
 from wattson.data.providers import PriceRequest
@@ -53,9 +53,27 @@ _NUMBER_WORDS = {2: "two", 3: "three", 4: "four", 5: "five", 6: "six",
                  7: "seven", 8: "eight", 9: "nine", 10: "ten"}
 
 
-def _cores_phrase(count: int) -> str:
-    """How the battery reads inside a sentence: 'a Base Core', 'two Base Cores'."""
-    return "a Base Core" if count == 1 else f"{_NUMBER_WORDS.get(count, count)} Base Cores"
+PRESET_LABELS = {
+    "residential_13kwh": "Home battery · 13.5 kWh / 5 kW",
+    "large_home_39kwh": "Large home battery · 39.2 kWh / 11 kW",
+    "commercial_1mw": "Commercial battery · 2 MWh / 1 MW",
+}
+DEFAULT_PRESET = "residential_13kwh"
+
+# How one of each reads inside a sentence.
+_SENTENCE_NAMES = {
+    "residential_13kwh": "13.5 kWh home battery",
+    "large_home_39kwh": "39.2 kWh home battery",
+    "commercial_1mw": "2 MWh commercial battery",
+}
+
+
+def _battery_phrase(key: str, count: int) -> str:
+    """'a 13.5 kWh home battery', 'two 13.5 kWh home batteries'."""
+    name = _SENTENCE_NAMES[key]
+    if count == 1:
+        return f"a {name}"
+    return f"{_NUMBER_WORDS.get(count, count)} {name[:-len('battery')]}batteries"
 
 
 DEFAULT_ZONE = "LZ_AEN"
@@ -268,52 +286,6 @@ STRATEGY_NAMES = {
     "perfect foresight (upper bound)": "Perfect hindsight (impossible in practice)",
 }
 
-DEFAULT_WEAR_CENTS = 1.2  # cents per kWh in or out; an estimate, Base doesn't publish one
-
-# Base's fees for a Core in Texas, the only grid Wattson covers.
-BASE_MONTHLY_FEE = 19.0
-BASE_INSTALL_FEE = 695.0
-FEE_SOURCE = (
-    "Base's fees in Texas: $695 to install and $19 a month "
-    "(basepowercompany.com/pricing)."
-)
-
-
-def fee_coverage(per_year: float, monthly_fee: float, install_fee: float) -> str:
-    """How much of Base's plan fees the battery's grid trading would pay for.
-
-    The fees are what the homeowner pays Base; the trading earnings go to Base.
-    Setting one against the other shows how far trading alone goes toward the
-    plan, from Base's side of the ledger.
-    """
-    monthly_fee_text = _money(monthly_fee, 2 if monthly_fee % 1 else 0)
-    per_month = per_year / 12
-    if per_year <= 0:
-        return (
-            "At this pace, the battery's grid trading wouldn't pay for any of the "
-            f"{monthly_fee_text} monthly fee."
-        )
-    share = per_year / (12 * monthly_fee)
-    if share >= 1:
-        text = (
-            "At this pace, the battery's grid trading would pay for all of the "
-            f"{monthly_fee_text} monthly fee, with about {_money(per_month - monthly_fee, 2)} "
-            "a month to spare."
-        )
-    else:
-        text = (
-            "At this pace, the battery's grid trading would pay for about "
-            f"{share:.0%} of the {monthly_fee_text} monthly fee: about "
-            f"{_money(per_month, 2)} of it each month."
-        )
-    if install_fee > 0:
-        first_year = install_fee + 12 * monthly_fee
-        text += (
-            f" Counting the {_money(install_fee)} install fee, it would cover about "
-            f"{min(per_year / first_year, 1):.0%} of the first year's {_money(first_year)}."
-        )
-    return text
-
 
 def _wear_explainer(cents: float) -> str:
     return (
@@ -323,12 +295,6 @@ def _wear_explainer(cents: float) -> str:
         "kWh that goes in or out as that trade's share of the replacement."
     )
 
-
-OWNER_NOTE = (
-    "Base owns and maintains its batteries, so battery wear is Base's cost, not "
-    "the homeowner's. \"Left after wear\" is what the battery's buying and "
-    "selling is worth once that cost is counted."
-)
 
 ZONE_HELP = (
     "The Texas grid is split into pricing areas. Yours depends on which "
@@ -348,14 +314,15 @@ GLOSSARY = {
              "agreed the day before, hour by hour.",
     "kWh and kW": "A kWh (kilowatt-hour) is an amount of energy: how much the "
              "battery holds. A kW (kilowatt) is a rate: how fast it can charge "
-             "or discharge. A Base Core holds 39.2 kWh and moves up to 11 kW.",
+             "or discharge. A typical home battery holds 13.5 kWh and moves up "
+             "to 5 kW.",
     "Cents per kWh": "The unit on a home electricity bill. Wholesale prices "
              "are usually a few cents, but can jump to dollars during a spike.",
     "Battery wear": "The slow, permanent loss of capacity as a battery's "
              "lithium cells age with use, which eventually means replacing it. "
              "Wattson counts it as a cost on every kWh in or out, so a trade only "
-             "happens when the price gap is bigger than the wear. Base carries "
-             "this cost, not the homeowner. It is not the same as the battery "
+             "happens when the price gap is bigger than the wear. "
+             "It is not the same as the battery "
              "running down during use, or energy lost as heat, which is counted "
              "separately.",
     "Trading hub": "A regional average price that energy traders use. Homes "
@@ -376,7 +343,7 @@ def _how_it_works() -> None:
         "difference is what it earns."
     )
     cols[2].markdown(
-        "**3. Wattson replays real prices.** It runs a Base battery through "
+        "**3. Wattson replays real prices.** It runs a battery through "
         "real past prices from the Texas grid to show what it would have earned."
     )
     st.divider()
@@ -385,7 +352,7 @@ def _how_it_works() -> None:
 def main() -> None:
     st.set_page_config(page_title="Wattson", layout="wide")
     st.title("Wattson")
-    st.header("What could a Base battery earn in your part of Texas?")
+    st.header("What could a battery earn in your part of Texas?")
     _how_it_works()
 
     credentials_ready = _load_credentials()
@@ -400,23 +367,26 @@ def main() -> None:
             format_func=label_for,
             help=ZONE_HELP,
         )
+        preset_key = st.selectbox(
+            "Battery",
+            list(PRESET_LABELS),
+            index=list(PRESET_LABELS).index(DEFAULT_PRESET),
+            format_func=lambda k: PRESET_LABELS[k],
+        )
         count = int(st.number_input(
-            "How many Base Cores?",
+            "How many batteries?",
             min_value=1,
-            max_value=MAX_BASE_CORES,
+            max_value=MAX_COUNT,
             value=1,
             step=1,
-            help="Each Base Core holds 39.2 kWh and charges or discharges at up "
-                 "to 11 kW. Base installs one or two per home.",
+            help="Several identical batteries at one site, run together.",
         ))
+        preset = scaled(PRESETS[preset_key], count)
         if count > 1:
             st.caption(
-                f"{count} Cores hold {39.2 * count:g} kWh. Every Core sees the same "
-                f"prices, so {count} Cores earn {count} times as much as one."
+                f"{count} batteries hold {preset.capacity_kwh:,g} kWh. Every one sees "
+                f"the same prices, so {count} batteries earn {count} times as much as one."
             )
-        if count > 2:
-            st.caption("Base installs one or two Cores per home; more is shown for comparison.")
-        preset = base_cores(count)
 
         today = _today()
         range_choice = st.selectbox(
@@ -449,31 +419,37 @@ def main() -> None:
                      + " Day-ahead (DAM): " + MARKET_EXPLAINERS["DAM"],
             )
             st.caption(MARKET_EXPLAINERS[market])
+            default_wear = round(preset.degradation_cost_per_kwh * 100, 1)
             wear_cents = st.slider(
                 "Battery wear cost (¢ per kWh in or out)",
-                0.0, 5.0, DEFAULT_WEAR_CENTS, 0.1,
+                0.0, 5.0, default_wear, 0.1,
                 help="How much each kWh the battery moves ages it, as a share of "
-                     "an eventual replacement. Base doesn't publish this; "
-                     f"{DEFAULT_WEAR_CENTS}¢ is Wattson's estimate for a lithium "
-                     "iron phosphate battery like Base Core. Results depend "
-                     "heavily on it.",
+                     f"an eventual replacement. {default_wear}¢ is Wattson's estimate "
+                     "for this battery. Results depend heavily on it.",
             )
-            if abs(wear_cents - DEFAULT_WEAR_CENTS) > 1e-9:
+            if abs(wear_cents - default_wear) > 1e-9:
                 st.caption(
                     f"Using {wear_cents:.1f}¢ per kWh for battery wear instead of "
-                    f"Wattson's {DEFAULT_WEAR_CENTS}¢ estimate."
+                    f"Wattson's {default_wear}¢ estimate."
                 )
             custom = st.checkbox("Try a custom battery size", value=False)
             if custom:
-                capacity = st.slider("How much it holds (kWh)", 5.0, 200.0, float(preset.capacity_kwh), 0.1)
-                power = st.slider("How fast it charges (kW)", 1.0, 50.0, float(preset.power_kw), 0.5)
+                capacity = st.slider(
+                    "How much it holds (kWh)", 5.0, max(200.0, 2 * preset.capacity_kwh),
+                    float(preset.capacity_kwh), 0.1,
+                )
+                power = st.slider(
+                    "How fast it charges (kW)", 1.0, max(50.0, 2 * preset.power_kw),
+                    float(preset.power_kw), 0.5,
+                )
                 efficiency = st.slider(
                     "Energy kept after a charge and discharge", 0.80, 0.98,
                     float(preset.round_trip_efficiency), 0.01,
                 )
                 installed = st.number_input(
                     "Purchase price in dollars (optional, for payback)",
-                    0.0, 200_000.0, float(preset.installed_cost_usd or 0.0), 500.0,
+                    0.0, max(200_000.0, 2 * (preset.installed_cost_usd or 0.0)),
+                    float(preset.installed_cost_usd or 0.0), 500.0,
                 )
                 battery = replace(
                     preset,
@@ -492,7 +468,7 @@ def main() -> None:
                 "to load new dates."
             )
 
-    battery_name = "a custom battery" if custom else _cores_phrase(count)
+    battery_name = "a custom battery" if custom else _battery_phrase(preset_key, count)
 
     if len(window) != 2:
         st.info("Pick a start and an end date to replay.")
@@ -514,7 +490,6 @@ def main() -> None:
         return
 
     per_year = _headline(prices, metrics, battery, battery_name, zone, market)
-    _fee_section(per_year, count, custom)
     _data_notes(prices, end_date, _today())
     _day_in_the_life(result)
     _day_by_day(result)
@@ -575,8 +550,7 @@ def _headline(prices, metrics, battery, battery_name: str, zone: str, market: st
     )
     cols[2].metric(
         "Left after wear", _money(left, 2),
-        help="What the battery's buying and selling is worth once wear is "
-             "counted. Base carries the wear, not the homeowner.",
+        help="What the battery's buying and selling is worth once wear is counted.",
     )
     cols[3].metric(
         "Per year at this pace", _money(per_year),
@@ -590,7 +564,6 @@ def _headline(prices, metrics, battery, battery_name: str, zone: str, market: st
             f"{years:,.0f} years" if years else "Not at this pace",
             help="Purchase price divided by what's left after wear each year.",
         )
-    st.caption(OWNER_NOTE)
 
     p = prices["price_usd_per_mwh"]
     latest = (
@@ -603,19 +576,6 @@ def _headline(prices, metrics, battery, battery_name: str, zone: str, market: st
         f"from {_cents(p.min())} to {_cents(p.max())} per kWh.{latest}"
     ))
     return per_year
-
-
-def _fee_section(per_year: float, count: int, custom: bool) -> None:
-    """Base's side of the ledger: how far grid trading goes toward the plan fees."""
-    st.markdown(_md(f"**{fee_coverage(per_year, BASE_MONTHLY_FEE, BASE_INSTALL_FEE)}**"))
-    note = FEE_SOURCE
-    if count > 1 and not custom:
-        note += " The fees shown are for one Core; plans with two may differ."
-    note += (
-        " Grid trading is only part of what a Base battery is worth: backup, the "
-        "electricity plan and other grid services aren't included here."
-    )
-    st.caption(_md(note))
 
 
 def _day_in_the_life(result) -> None:
@@ -749,8 +709,8 @@ def _limits() -> None:
         "**What this leaves out.** These figures replay past prices. They aren't "
         "a promise about the future, and prices vary a lot from month to month. "
         "They also count only buying and selling power. Backup during outages, "
-        "lower bills, and the grid-balancing Base does with its whole fleet "
-        "aren't included, and those are the main reasons people get a Base battery."
+        "lower bills and other grid services aren't included, and those are "
+        "often the main reasons people buy a battery."
     )
 
 
@@ -859,19 +819,12 @@ def _zone_comparison(
         return
 
     annual = comparison["usd_per_kw_year"] * battery.power_kw
-    monthly_fee = BASE_MONTHLY_FEE
     best = annual.idxmax()
     if annual[best] > 0:
-        share = annual[best] / (12 * monthly_fee)
-        fee_share = (
-            f", more than enough to cover Base's {_money(monthly_fee)} monthly fee"
-            if share >= 1
-            else f", enough for about {share:.0%} of Base's {_money(monthly_fee)} monthly fee"
-        )
         st.success(_md(
             f"**{short_name(best)} comes out on top**: {battery_name} there "
             f"would have earned about {_money(annual[best])} a year after wear, at "
-            f"this pace{fee_share}."
+            "this pace."
         ))
     else:
         st.error(_md(
@@ -894,7 +847,6 @@ def _zone_comparison(
                 "Made ($)": comparison["net_usd"].round(2),
                 "Left after wear ($)": comparison["net_after_degradation_usd"].round(2),
                 "Per year ($)": annual.round(0),
-                "Share of monthly fee": (annual / (12 * monthly_fee)).clip(lower=0).map("{:.0%}".format),
                 "Average price (¢ per kWh)": (comparison["mean_price_usd_per_mwh"] / 10).round(2),
                 "Priciest 5% of the time (¢ per kWh)": (comparison["p95_price_usd_per_mwh"] / 10).round(2),
             },

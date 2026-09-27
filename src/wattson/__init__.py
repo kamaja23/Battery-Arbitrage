@@ -1,1 +1,1 @@
-"""Wattson: ERCOT battery arbitrage simulator and backtester for Base home batteries."""
+"""Wattson: ERCOT battery arbitrage simulator and backtester."""

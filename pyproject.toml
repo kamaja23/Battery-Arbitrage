@@ -1,7 +1,7 @@
 [project]
 name = "wattson"
 version = "0.1.0"
-description = "Wattson: backtests Base home batteries against real ERCOT prices"
+description = "Wattson: backtests batteries against real ERCOT prices"
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "pandas>=2.2,<3",

@@ -105,13 +105,13 @@ COMMERCIAL_1MW = BatteryConfig(
     installed_cost_usd=960_000.0,
 )
 
-# Base Power's home battery: Base Core. Its 39.2 kWh capacity is on
-# basepowercompany.com/specs/core, and Base's help center lists the 39.2 kWh
-# system with an 11 kW inverter. Homes can have one Core or two. Base does not publish
-# round-trip efficiency, usable SOC window, or cycle life, so those use the
-# same LFP assumptions as the generic presets above. Base owns the battery and
-# prices vary by address, so no installed cost is assumed.
-_BASE_LFP = dict(
+# A larger home battery: 39.2 kWh on an 11 kW inverter. Efficiency, usable
+# charge window and wear use typical lithium iron phosphate assumptions. No
+# purchase price is assumed; one can be entered in the app for a payback figure.
+LARGE_HOME_39KWH = BatteryConfig(
+    name="large_home_39kwh",
+    capacity_kwh=39.2,
+    power_kw=11.0,
     round_trip_efficiency=0.90,
     soc_min=0.10,
     soc_max=0.95,
@@ -119,30 +119,29 @@ _BASE_LFP = dict(
     installed_cost_usd=None,
 )
 
-BASE_CORE = BatteryConfig(name="base_core", capacity_kwh=39.2, power_kw=11.0, **_BASE_LFP)
-MAX_BASE_CORES = 10
+PRESETS: dict[str, BatteryConfig] = {
+    b.name: b for b in (RESIDENTIAL_13KWH, LARGE_HOME_39KWH, COMMERCIAL_1MW)
+}
+
+MAX_COUNT = 10
 
 
-def base_cores(count: int) -> BatteryConfig:
-    """``count`` Base Cores at one home, modelled as one larger battery.
+def scaled(battery: BatteryConfig, count: int) -> BatteryConfig:
+    """``count`` identical batteries at one site, modelled as one larger battery.
 
-    Each Core adds 39.2 kWh and 11 kW. Base installs one or two per home; the
-    combined power of two is not published, so adding the inverters up is an
-    assumption. Every Core sees the same prices, so in this energy-only model
-    earnings scale directly with the count.
+    Capacity, power and any purchase price add up. Every unit sees the same
+    prices, so in this energy-only model earnings scale directly with the count.
     """
-    if not 1 <= count <= MAX_BASE_CORES:
-        raise ValueError(f"count must be between 1 and {MAX_BASE_CORES}, got {count}")
+    if not 1 <= count <= MAX_COUNT:
+        raise ValueError(f"count must be between 1 and {MAX_COUNT}, got {count}")
     if count == 1:
-        return BASE_CORE
+        return battery
     return replace(
-        BASE_CORE,
-        name=f"base_core_x{count}",
-        capacity_kwh=round(BASE_CORE.capacity_kwh * count, 6),
-        power_kw=round(BASE_CORE.power_kw * count, 6),
+        battery,
+        name=f"{battery.name}_x{count}",
+        capacity_kwh=round(battery.capacity_kwh * count, 6),
+        power_kw=round(battery.power_kw * count, 6),
+        installed_cost_usd=(
+            None if battery.installed_cost_usd is None else battery.installed_cost_usd * count
+        ),
     )
-
-
-# The app offers only Base's product. The generic presets above stay defined
-# because the CLI and the test suite use them as fixed reference batteries.
-PRESETS: dict[str, BatteryConfig] = {BASE_CORE.name: BASE_CORE}

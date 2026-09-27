@@ -71,7 +71,7 @@ class TestRenders:
     def test_it_asks_the_question_in_plain_words(self, offline_ui):
         offline_ui.run()
         assert offline_ui.title[0].value == "Wattson"
-        assert "What could a Base battery earn" in offline_ui.header[0].value
+        assert "What could a battery earn" in offline_ui.header[0].value
 
     def test_it_explains_the_idea_before_any_numbers(self, offline_ui):
         offline_ui.run()
@@ -246,10 +246,13 @@ class TestInteraction:
         assert two == pytest.approx(2 * one, abs=0.02)
 
     def test_every_count_runs_without_error(self, offline_ui):
-        from wattson.config import MAX_BASE_CORES
+        from wattson.config import MAX_COUNT, PRESETS
 
         offline_ui.run()
-        for n in (1, 2, 3, MAX_BASE_CORES):
+        for key in PRESETS:
+            offline_ui.selectbox[1].set_value(key).run()
+            assert not offline_ui.exception, key
+        for n in (1, 2, 3, MAX_COUNT):
             offline_ui.number_input[0].set_value(n).run()
             assert not offline_ui.exception, n
 
@@ -282,42 +285,64 @@ class TestDemoDefaults:
         assert offline_ui.selectbox[0].value == "LZ_AEN"
         assert "Austin Energy" in label_for(offline_ui.selectbox[0].value)
 
-    def test_it_asks_how_many_base_cores_and_starts_at_one(self, offline_ui):
-        from wattson.config import MAX_BASE_CORES
+    def test_it_offers_generic_batteries_and_starts_on_the_home_one(self, offline_ui):
+        offline_ui.run()
+        picker = offline_ui.selectbox[1]
+        assert picker.label == "Battery"
+        assert picker.options == [
+            "Home battery · 13.5 kWh / 5 kW",
+            "Large home battery · 39.2 kWh / 11 kW",
+            "Commercial battery · 2 MWh / 1 MW",
+        ]
+        assert picker.value == "residential_13kwh"
+
+    def test_it_asks_how_many_and_starts_at_one(self, offline_ui):
+        from wattson.config import MAX_COUNT
 
         offline_ui.run()
         picker = offline_ui.number_input[0]
-        assert picker.label == "How many Base Cores?"
+        assert picker.label == "How many batteries?"
         assert picker.value == 1
-        assert (picker.min, picker.max) == (1, MAX_BASE_CORES)
-        assert "39.2 kWh" in (picker.help or "")
+        assert (picker.min, picker.max) == (1, MAX_COUNT)
 
     @pytest.mark.parametrize(
         ("count", "phrase"),
-        [(1, "a Base Core in the"), (2, "two Base Cores in the"), (3, "three Base Cores in the")],
+        [
+            (1, "a 13.5 kWh home battery in the"),
+            (2, "two 13.5 kWh home batteries in the"),
+            (3, "three 13.5 kWh home batteries in the"),
+        ],
     )
     def test_the_count_reads_naturally_in_the_headline(self, offline_ui, count, phrase):
         offline_ui.run()
         offline_ui.number_input[0].set_value(count).run()
         assert phrase in offline_ui.success[0].value
 
-    def test_it_explains_that_earnings_scale_and_flags_more_than_two(self, offline_ui):
+    def test_other_presets_read_naturally_too(self, offline_ui):
+        offline_ui.run()
+        offline_ui.selectbox[1].set_value("commercial_1mw").run()
+        assert "a 2 MWh commercial battery in the" in (offline_ui.success or offline_ui.error)[0].value
+
+    def test_it_explains_that_earnings_scale(self, offline_ui):
         offline_ui.run()
         assert "earn 2 times as much" not in _captions(offline_ui)
         offline_ui.number_input[0].set_value(2).run()
-        assert "2 Cores earn 2 times as much as one" in _captions(offline_ui)
-        assert "shown for comparison" not in _captions(offline_ui)
-        offline_ui.number_input[0].set_value(3).run()
-        assert "Base installs one or two Cores per home" in _captions(offline_ui)
+        assert "2 batteries hold 27 kWh" in _captions(offline_ui)
+        assert "2 batteries earn 2 times as much as one" in _captions(offline_ui)
 
     def test_the_comparison_uses_the_count_too(self, offline_ui):
         offline_ui.run()
         offline_ui.number_input[0].set_value(2).run()
         offline_ui.radio[0].set_value(COMPARE).run()
-        assert "two Base Cores there would have earned" in offline_ui.success[0].value
+        assert "two 13.5 kWh home batteries there would have earned" in offline_ui.success[0].value
+
+    def test_payback_shows_when_the_preset_has_a_price(self, offline_ui):
+        offline_ui.run()
+        assert "Pays for itself in" in [m.label for m in offline_ui.metric]
 
     def test_payback_is_not_claimed_without_a_price(self, offline_ui):
         offline_ui.run()
+        offline_ui.selectbox[1].set_value("large_home_39kwh").run()
         assert "Pays for itself in" not in [m.label for m in offline_ui.metric]
 
 
@@ -403,7 +428,7 @@ class TestDatePresets:
 
     def test_it_offers_presets_and_custom_dates(self, offline_ui):
         offline_ui.run()
-        picker = offline_ui.selectbox[1]
+        picker = offline_ui.selectbox[2]
         assert picker.label == "Dates to replay"
         assert picker.options == [
             "Last 7 days", "Last month", "Last 2 months", "Last 3 months",
@@ -415,7 +440,7 @@ class TestDatePresets:
 
         monkeypatch.setattr(ui, "_today", lambda: self.TODAY)
         offline_ui.run()
-        assert offline_ui.selectbox[1].value == "Last month"
+        assert offline_ui.selectbox[2].value == "Last month"
         assert "Aug 27, 2026 to today (Sep 26)" in _captions(offline_ui)
 
     @pytest.mark.parametrize(
@@ -439,7 +464,7 @@ class TestDatePresets:
         monkeypatch.setattr(ui, "_today", lambda: self.TODAY)
         offline_ui.run()
         assert not offline_ui.date_input
-        offline_ui.selectbox[1].set_value("Custom dates").run()
+        offline_ui.selectbox[2].set_value("Custom dates").run()
         picker = offline_ui.date_input[0]
         assert picker.value == (dt.date(2026, 8, 28), self.TODAY)
         assert picker.max == self.TODAY
@@ -535,7 +560,7 @@ class TestHeadline:
     def test_it_leads_with_what_the_battery_earned_then_wear(self, offline_ui):
         offline_ui.run()
         text = offline_ui.success[0].value
-        assert "a Base Core in the Austin Energy area would have earned \\$" in text
+        assert "a 13.5 kWh home battery in the Austin Energy area would have earned \\$" in text
         assert "of battery wear, that leaves \\$" in text
         assert "a year at this pace" in text
         assert "buying power when it was cheap and selling it back" in text
@@ -603,7 +628,7 @@ class TestBatteryWear:
         help_text = _metric(offline_ui, "Battery wear").help or ""
         assert "lithium cells age" in help_text
         assert "permanently loses" in help_text
-        assert "1.2¢ for every kWh" in help_text
+        assert "1.5¢ for every kWh" in help_text
 
     def test_the_glossary_separates_wear_from_other_losses(self, offline_ui):
         offline_ui.run()
@@ -611,15 +636,16 @@ class TestBatteryWear:
         assert "lithium cells age" in text
         assert "not the same as the battery running down" in text
 
-    def test_it_says_who_carries_the_cost(self, offline_ui):
+    def test_each_preset_starts_at_its_own_wear_estimate(self, offline_ui):
         offline_ui.run()
-        assert "battery wear is Base's cost, not the homeowner's" in _captions(offline_ui)
+        offline_ui.selectbox[1].set_value("commercial_1mw").run()
+        assert offline_ui.slider[0].value == pytest.approx(0.8)
 
     def test_the_wear_cost_is_adjustable_and_starts_at_the_estimate(self, offline_ui):
         offline_ui.run()
         slider = offline_ui.slider[0]
         assert slider.label == "Battery wear cost (¢ per kWh in or out)"
-        assert slider.value == pytest.approx(1.2)
+        assert slider.value == pytest.approx(1.5)
         assert "instead of Wattson's" not in _captions(offline_ui)
 
     def test_changing_it_changes_the_result_and_says_so(self, offline_ui):
@@ -630,7 +656,7 @@ class TestBatteryWear:
         default_wear = dollars("Battery wear")
         offline_ui.slider[0].set_value(2.4).run()
         assert not offline_ui.exception
-        assert "Using 2.4¢ per kWh for battery wear instead of Wattson's 1.2¢ estimate" in _captions(offline_ui)
+        assert "Using 2.4¢ per kWh for battery wear instead of Wattson's 1.5¢ estimate" in _captions(offline_ui)
         # More expensive wear means more wear cost, and a planner that trades less.
         assert dollars("Battery wear") != default_wear
         assert "2.4¢ for every kWh" in (_metric(offline_ui, "Battery wear").help or "")
@@ -645,75 +671,13 @@ class TestBatteryWear:
         assert dollars("Left after wear") == pytest.approx(dollars("Earned buying low, selling high"))
 
 
-
-class TestPlanFees:
-    """Option 2: how much of Base's plan fees the battery's grid trading pays for."""
-
-    def test_the_fees_are_fixed_not_adjustable(self, offline_ui):
-        offline_ui.run()
-        labels = [n.label for n in offline_ui.number_input]
-        assert not any("fee" in label.lower() for label in labels)
-        assert "Base's fees in Texas: \\$695 to install and \\$19 a month" in _captions(offline_ui)
-
-    def test_the_page_says_how_much_of_the_fee_trading_covers(self, offline_ui):
-        offline_ui.run()
-        text = " ".join(m.value for m in offline_ui.markdown)
-        assert re.search(r"would pay for about \d+% of the \\\$19 monthly fee", text)
-        assert "install fee" in text and "first year" in text
-        captions = _captions(offline_ui)
-        assert "basepowercompany.com/pricing" in captions
-        assert "Grid trading is only part of what a Base battery is worth" in captions
-
-    def test_more_than_one_core_notes_the_fee_is_for_one(self, offline_ui):
-        offline_ui.run()
-        assert "fees shown are for one Core" not in _captions(offline_ui)
-        offline_ui.number_input[0].set_value(2).run()
-        assert "fees shown are for one Core" in _captions(offline_ui)
-
-    def test_the_comparison_view_shows_the_fee_share(self, offline_ui):
-        offline_ui.run()
-        offline_ui.radio[0].set_value(COMPARE).run()
-        assert re.search(r"enough for about \d+% of Base's \\\$19 monthly fee", offline_ui.success[0].value)
-        table = _expander(offline_ui, "Show the detailed numbers").dataframe[0].value
-        assert "Share of monthly fee" in table.columns
-
-
-class TestFeeCoverage:
-    def test_partial_coverage(self):
-        from wattson.ui import fee_coverage
-
-        text = fee_coverage(114.0, 19.0, 695.0)
-        assert "about 50% of the $19 monthly fee: about $9.50 of it each month" in text
-        assert "about 12% of the first year's $923" in text
-
-    def test_more_than_the_whole_fee(self):
-        from wattson.ui import fee_coverage
-
-        text = fee_coverage(300.0, 19.0, 0.0)
-        assert "all of the $19 monthly fee, with about $6.00 a month to spare" in text
-        assert "install" not in text
-
-    def test_no_coverage_when_trading_loses_money(self):
-        from wattson.ui import fee_coverage
-
-        assert "wouldn't pay for any of the $19 monthly fee" in fee_coverage(-5.0, 19.0, 695.0)
-
-    def test_cents_in_the_fee_are_kept(self):
-        from wattson.ui import fee_coverage
-
-        assert "$19.99 monthly fee" in fee_coverage(100.0, 19.99, 0.0)
-
-
-def test_the_comparison_says_when_trading_covers_the_whole_fee(monkeypatch):
-    import wattson.ui as ui
-
-    st.cache_data.clear()
-    spiky = _synthetic().assign(price_usd_per_mwh=lambda f: f["price_usd_per_mwh"] * 40)
-    monkeypatch.setattr(ui, "_prices_cached", lambda *a, **k: spiky)
-    monkeypatch.setattr(ui, "_load_credentials", lambda: False)
-    app = AppTest.from_file(APP, default_timeout=120)
-    app.run()
-    app.radio[0].set_value(COMPARE).run()
-    text = app.success[0].value
-    assert "more than enough to cover Base's \\$19 monthly fee" in text
-    assert "100%" not in text
+def test_the_app_never_mentions_base_or_its_fees(offline_ui):
+    offline_ui.run()
+    offline_ui.radio[0].set_value(COMPARE).run()
+    offline_ui.radio[0].set_value("One area").run()
+    kinds = ("success", "error", "warning", "info", "caption", "markdown", "header", "subheader", "title")
+    texts = [el.value for kind in kinds for el in getattr(offline_ui, kind)]
+    texts += [w.label for w in offline_ui.selectbox] + sum((w.options for w in offline_ui.selectbox), [])
+    texts += [w.help or "" for w in list(offline_ui.metric) + list(offline_ui.number_input) + list(offline_ui.slider)]
+    hits = [t for t in texts if re.search(r"\bBase\b|\bCores?\b|subscription|monthly fee|install fee", t)]
+    assert hits == []

@@ -78,22 +78,29 @@ class TestNameFor:
         assert name_for("LZ_NOWHERE") == "LZ_NOWHERE"
 
 
-class TestBaseCores:
-    def test_one_core_is_base_core(self):
-        from wattson.config import BASE_CORE, base_cores
+class TestScaled:
+    def test_one_is_the_preset_itself(self):
+        from wattson.config import RESIDENTIAL_13KWH, scaled
 
-        assert base_cores(1) is BASE_CORE
+        assert scaled(RESIDENTIAL_13KWH, 1) is RESIDENTIAL_13KWH
 
-    def test_cores_add_up(self):
-        from wattson.config import base_cores
+    def test_capacity_power_and_price_add_up(self):
+        from wattson.config import LARGE_HOME_39KWH, RESIDENTIAL_13KWH, scaled
 
-        three = base_cores(3)
+        three = scaled(LARGE_HOME_39KWH, 3)
         assert (three.capacity_kwh, three.power_kw) == (117.6, 33.0)
-        assert three.round_trip_efficiency == base_cores(1).round_trip_efficiency
+        assert three.installed_cost_usd is None
+        assert scaled(RESIDENTIAL_13KWH, 2).installed_cost_usd == 30_000.0
+        assert three.round_trip_efficiency == LARGE_HOME_39KWH.round_trip_efficiency
 
     @pytest.mark.parametrize("bad", [0, 11])
     def test_out_of_range_counts_are_rejected(self, bad):
-        from wattson.config import base_cores
+        from wattson.config import RESIDENTIAL_13KWH, scaled
 
         with pytest.raises(ValueError):
-            base_cores(bad)
+            scaled(RESIDENTIAL_13KWH, bad)
+
+    def test_the_presets_are_generic(self):
+        from wattson.config import PRESETS
+
+        assert list(PRESETS) == ["residential_13kwh", "large_home_39kwh", "commercial_1mw"]

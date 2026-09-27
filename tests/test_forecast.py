@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from wattson.config import BASE_CORE, CENTRAL_TIME
+from wattson.config import LARGE_HOME_39KWH, CENTRAL_TIME
 from wattson.data.providers import PriceRequest, SyntheticProvider
 from wattson.forecast import forecast_accuracy, plan_next_day, profile_forecast
 from wattson.metrics import compute_metrics
@@ -107,12 +107,12 @@ class TestForecastAccuracy:
 
 class TestPlanNextDay:
     def test_it_plans_the_day_after_the_data(self):
-        plan = plan_next_day(_repeating(days=5), BASE_CORE)
+        plan = plan_next_day(_repeating(days=5), LARGE_HOME_39KWH)
         assert plan.date == pd.Timestamp("2026-06-06").date()
         assert len(plan.timestamps) == 96
 
     def test_it_buys_cheap_and_sells_the_evening_peak(self):
-        plan = plan_next_day(_repeating(days=5), BASE_CORE)
+        plan = plan_next_day(_repeating(days=5), LARGE_HOME_39KWH)
         frame = plan.to_frame()
         hours = pd.DatetimeIndex(frame["interval_start"]).hour
         peak = (hours >= 17) & (hours < 20)
@@ -122,80 +122,80 @@ class TestPlanNextDay:
         assert plan.expected_net_after_wear_usd > 0
 
     def test_it_respects_the_battery(self):
-        plan = plan_next_day(_repeating(days=5), BASE_CORE)
-        assert plan.charge_kw.max() <= BASE_CORE.power_kw + 1e-6
-        assert plan.soc_kwh.max() <= BASE_CORE.soc_max * BASE_CORE.capacity_kwh + 1e-6
+        plan = plan_next_day(_repeating(days=5), LARGE_HOME_39KWH)
+        assert plan.charge_kw.max() <= LARGE_HOME_39KWH.power_kw + 1e-6
+        assert plan.soc_kwh.max() <= LARGE_HOME_39KWH.soc_max * LARGE_HOME_39KWH.capacity_kwh + 1e-6
 
     def test_it_stays_idle_when_the_spread_cannot_cover_wear(self):
         flat = _repeating(days=5) * 0 + 30.0
-        plan = plan_next_day(flat, BASE_CORE)
+        plan = plan_next_day(flat, LARGE_HOME_39KWH)
         assert plan.charge_kw.sum() == pytest.approx(0.0, abs=1e-6)
         assert plan.expected_net_usd == pytest.approx(0.0, abs=1e-6)
 
     def test_spring_forward_has_one_hour_fewer(self):
         series = _repeating(days=5, start="2026-03-03")
-        plan = plan_next_day(series, BASE_CORE)
+        plan = plan_next_day(series, LARGE_HOME_39KWH)
         assert plan.date == pd.Timestamp("2026-03-08").date()
         assert len(plan.timestamps) == 92
 
 
 class TestForecastStrategy:
     def test_it_is_idle_on_the_first_day(self):
-        result = run_backtest(_frame(_repeating()), BASE_CORE, ForecastStrategy())
+        result = run_backtest(_frame(_repeating()), LARGE_HOME_39KWH, ForecastStrategy())
         first = result.ledger.iloc[:96]
         assert (first["charge_kw"] == 0).all() and (first["discharge_kw"] == 0).all()
 
     def test_on_a_predictable_series_it_nears_perfect_foresight(self):
         series = _repeating()
-        result = run_backtest(_frame(series), BASE_CORE, ForecastStrategy())
-        optimal = solve_perfect_foresight(series, BASE_CORE).net_usd
+        result = run_backtest(_frame(series), LARGE_HOME_39KWH, ForecastStrategy())
+        optimal = solve_perfect_foresight(series, LARGE_HOME_39KWH).net_usd
         # Day one is idle, so 9 of 10 days is the most it can reach.
         assert result.net_usd > 0.75 * optimal
         assert result.net_usd <= optimal + 1e-6
 
     def test_its_decisions_never_depend_on_later_prices(self):
         series = _synthetic()
-        before = run_backtest(_frame(series), BASE_CORE, ForecastStrategy()).ledger
+        before = run_backtest(_frame(series), LARGE_HOME_39KWH, ForecastStrategy()).ledger
         tampered = series.copy()
         tampered.iloc[10 * 96 :] *= 3.0
-        after = run_backtest(_frame(tampered), BASE_CORE, ForecastStrategy()).ledger
+        after = run_backtest(_frame(tampered), LARGE_HOME_39KWH, ForecastStrategy()).ledger
         cols = ["charge_kw", "discharge_kw", "soc_end_kwh"]
         pd.testing.assert_frame_equal(before[cols].iloc[: 10 * 96], after[cols].iloc[: 10 * 96])
 
     def test_it_respects_power_and_charge_limits(self):
-        result = run_backtest(_frame(_synthetic()), BASE_CORE, ForecastStrategy())
+        result = run_backtest(_frame(_synthetic()), LARGE_HOME_39KWH, ForecastStrategy())
         ledger = result.ledger
-        assert ledger["charge_kw"].max() <= BASE_CORE.power_kw + 1e-9
-        assert ledger["discharge_kw"].max() <= BASE_CORE.power_kw + 1e-9
+        assert ledger["charge_kw"].max() <= LARGE_HOME_39KWH.power_kw + 1e-9
+        assert ledger["discharge_kw"].max() <= LARGE_HOME_39KWH.power_kw + 1e-9
         assert ((ledger["charge_kw"] > 0) & (ledger["discharge_kw"] > 0)).sum() == 0
-        assert ledger["soc_fraction"].max() <= BASE_CORE.soc_max + 1e-9
+        assert ledger["soc_fraction"].max() <= LARGE_HOME_39KWH.soc_max + 1e-9
 
     def test_it_trades_less_than_the_optimizer_that_ignores_wear(self):
         series = _synthetic()
-        planned = compute_metrics(run_backtest(_frame(series), BASE_CORE, ForecastStrategy()))
+        planned = compute_metrics(run_backtest(_frame(series), LARGE_HOME_39KWH, ForecastStrategy()))
         assert planned.net_after_degradation_usd > -1.0  # wear-aware: no big losses
 
     def test_it_can_be_run_twice(self):
         strategy = ForecastStrategy()
-        first = run_backtest(_frame(_repeating()), BASE_CORE, strategy).net_usd
-        second = run_backtest(_frame(_repeating()), BASE_CORE, strategy).net_usd
+        first = run_backtest(_frame(_repeating()), LARGE_HOME_39KWH, strategy).net_usd
+        second = run_backtest(_frame(_repeating()), LARGE_HOME_39KWH, strategy).net_usd
         assert first == pytest.approx(second)
 
 
 class TestThroughputCost:
     def test_zero_cost_matches_the_plain_upper_bound(self):
         series = _synthetic(days=5)
-        plain = solve_perfect_foresight(series, BASE_CORE)
-        costed = solve_perfect_foresight(series, BASE_CORE, throughput_cost_per_kwh=0.0)
+        plain = solve_perfect_foresight(series, LARGE_HOME_39KWH)
+        costed = solve_perfect_foresight(series, LARGE_HOME_39KWH, throughput_cost_per_kwh=0.0)
         assert costed.net_usd == pytest.approx(plain.net_usd)
 
     def test_wear_cost_reduces_cycling(self):
         series = _synthetic(days=5)
-        plain = solve_perfect_foresight(series, BASE_CORE)
-        costed = solve_perfect_foresight(series, BASE_CORE, throughput_cost_per_kwh=0.05)
+        plain = solve_perfect_foresight(series, LARGE_HOME_39KWH)
+        costed = solve_perfect_foresight(series, LARGE_HOME_39KWH, throughput_cost_per_kwh=0.05)
         assert costed.discharge_kw.sum() < plain.discharge_kw.sum()
 
     def test_a_prohibitive_cost_stops_trading(self):
         series = _synthetic(days=3)
-        costed = solve_perfect_foresight(series, BASE_CORE, throughput_cost_per_kwh=10.0)
+        costed = solve_perfect_foresight(series, LARGE_HOME_39KWH, throughput_cost_per_kwh=10.0)
         assert costed.charge_kw.sum() == pytest.approx(0.0, abs=1e-6)

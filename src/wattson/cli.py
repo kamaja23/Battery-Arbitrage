@@ -16,7 +16,7 @@ import sys
 
 import pandas as pd
 
-from wattson.config import MAX_BASE_CORES, BatteryConfig, base_cores
+from wattson.config import MAX_COUNT, PRESETS, BatteryConfig, scaled
 from wattson.data.cache import cached_fetch, load
 from wattson.data.ercot_source import ErcotLiveProvider, load_keys_file
 from wattson.data.providers import PriceRequest
@@ -35,19 +35,33 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--keys", default=DEFAULT_KEYS, help="credentials file")
 
 
-def _add_battery(parser: argparse.ArgumentParser) -> None:
+DEFAULT_BATTERY = "residential_13kwh"
+
+
+def _add_battery(parser: argparse.ArgumentParser, allow_all: bool = False) -> None:
     parser.add_argument(
-        "--cores",
+        "--battery",
+        default="all" if allow_all else DEFAULT_BATTERY,
+        choices=list(PRESETS) + (["all"] if allow_all else []),
+        help="battery preset" + (" (default: every preset)" if allow_all else ""),
+    )
+    parser.add_argument(
+        "--count",
         type=int,
         default=1,
-        choices=range(1, MAX_BASE_CORES + 1),
-        metavar=f"1-{MAX_BASE_CORES}",
-        help="how many Base Cores (39.2 kWh / 11 kW each); default 1",
+        choices=range(1, MAX_COUNT + 1),
+        metavar=f"1-{MAX_COUNT}",
+        help="how many identical batteries; default 1",
     )
 
 
+def _batteries(args: argparse.Namespace) -> list[BatteryConfig]:
+    chosen = PRESETS.values() if args.battery == "all" else [PRESETS[args.battery]]
+    return [scaled(b, args.count) for b in chosen]
+
+
 def _battery(args: argparse.Namespace) -> BatteryConfig:
-    return base_cores(args.cores)
+    return scaled(PRESETS[args.battery], args.count)
 
 
 def _keys_ready(path: str) -> bool:
@@ -103,7 +117,7 @@ def cmd_backtest(args: argparse.Namespace) -> int:
     prices = _load(args)
     _describe(prices, args)
 
-    for battery in [_battery(args)]:
+    for battery in _batteries(args):
         frame = compare_strategies(prices, battery, ThresholdStrategy())
         view = frame[
             [
@@ -268,7 +282,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     backtest = sub.add_parser("backtest", help="backtest the strategies on real prices")
     _add_common(backtest)
-    _add_battery(backtest)
+    _add_battery(backtest, allow_all=True)
     backtest.set_defaults(func=cmd_backtest)
 
     fetch = sub.add_parser("fetch", help="download and cache prices only")

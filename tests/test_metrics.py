@@ -299,7 +299,7 @@ class TestParallel:
         )
 
     def test_zones_in_parallel_match_sequential(self):
-        from wattson.config import BASE_CORE
+        from wattson.config import LARGE_HOME_39KWH
         from wattson.parallel import PARALLEL_MIN_INTERVALS
         from wattson.strategies.forecast import ForecastStrategy
 
@@ -307,32 +307,32 @@ class TestParallel:
 
         frames = {"LZ_A": self._long("LZ_A", 1), "LZ_B": self._long("LZ_B", 2), "LZ_C": self._long("LZ_C", 3)}
         assert sum(map(len, frames.values())) >= PARALLEL_MIN_INTERVALS
-        one = compare_zones(frames, BASE_CORE, ForecastStrategy(), workers=1)
-        many = compare_zones(frames, BASE_CORE, ForecastStrategy(), workers=3)
+        one = compare_zones(frames, LARGE_HOME_39KWH, ForecastStrategy(), workers=1)
+        many = compare_zones(frames, LARGE_HOME_39KWH, ForecastStrategy(), workers=3)
         pd.testing.assert_frame_equal(one, many)
 
     def test_strategies_in_parallel_match_sequential(self):
-        from wattson.config import BASE_CORE
+        from wattson.config import LARGE_HOME_39KWH
 
         prices = self._long("LZ_A", 4)
-        one = compare_strategies(prices, BASE_CORE, ThresholdStrategy(), workers=1)
-        many = compare_strategies(prices, BASE_CORE, ThresholdStrategy(), workers=3)
+        one = compare_strategies(prices, LARGE_HOME_39KWH, ThresholdStrategy(), workers=1)
+        many = compare_strategies(prices, LARGE_HOME_39KWH, ThresholdStrategy(), workers=3)
         pd.testing.assert_frame_equal(one, many)
 
     def test_precomputed_results_are_used_not_rerun(self, monkeypatch):
         import wattson.sim.engine as engine
-        from wattson.config import BASE_CORE
+        from wattson.config import LARGE_HOME_39KWH
         from wattson.sim.engine import run_backtest
         from wattson.strategies.forecast import ForecastStrategy
 
         prices = self._long("LZ_A", 5)
-        planned = run_backtest(prices, BASE_CORE, ForecastStrategy())
-        expected = compare_strategies(prices, BASE_CORE, ThresholdStrategy())
+        planned = run_backtest(prices, LARGE_HOME_39KWH, ForecastStrategy())
+        expected = compare_strategies(prices, LARGE_HOME_39KWH, ThresholdStrategy())
 
         calls = []
         real = engine.run_backtest
         monkeypatch.setattr(engine, "run_backtest", lambda *a, **k: calls.append(a[2].name) or real(*a, **k))
-        got = compare_strategies(prices, BASE_CORE, ThresholdStrategy(), forecast_result=planned)
+        got = compare_strategies(prices, LARGE_HOME_39KWH, ThresholdStrategy(), forecast_result=planned)
         assert "forecast" not in calls
         pd.testing.assert_frame_equal(expected, got)
 
@@ -342,19 +342,19 @@ def test_parallel_runs_fall_back_when_workers_cannot_start(monkeypatch):
     import sys
     import types
 
-    from wattson.config import BASE_CORE
+    from wattson.config import LARGE_HOME_39KWH
     from wattson.metrics import compare_zones
     from wattson.strategies.forecast import ForecastStrategy
 
     frames = {code: TestParallel._long(code, seed) for code, seed in (("LZ_A", 1), ("LZ_B", 2))}
-    expected = compare_zones(frames, BASE_CORE, ForecastStrategy(), workers=1)
+    expected = compare_zones(frames, LARGE_HOME_39KWH, ForecastStrategy(), workers=1)
 
     fake_main = types.ModuleType("__main__")
     fake_main.__file__ = "/nonexistent/<stdin>"
     monkeypatch.setitem(sys.modules, "__main__", fake_main)
-    got = compare_zones(frames, BASE_CORE, ForecastStrategy(), workers=2)
+    got = compare_zones(frames, LARGE_HOME_39KWH, ForecastStrategy(), workers=2)
     pd.testing.assert_frame_equal(expected, got)
 
-    one = compare_strategies(frames["LZ_A"], BASE_CORE, ThresholdStrategy(), workers=1)
-    many = compare_strategies(frames["LZ_A"], BASE_CORE, ThresholdStrategy(), workers=3)
+    one = compare_strategies(frames["LZ_A"], LARGE_HOME_39KWH, ThresholdStrategy(), workers=1)
+    many = compare_strategies(frames["LZ_A"], LARGE_HOME_39KWH, ThresholdStrategy(), workers=3)
     pd.testing.assert_frame_equal(one, many)
